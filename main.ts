@@ -935,16 +935,45 @@ class InDocumentDiffController {
     const suggestionEl = container.createDiv({ cls: "pr-review-suggestion-block" });
     suggestionEl.createDiv({ cls: "pr-review-suggestion-label", text: "Suggested change" });
     const linesEl = suggestionEl.createDiv({ cls: "pr-review-suggestion-lines" });
+    const suggestionLines = suggestion.trimEnd().split(/\r?\n/);
     if (originalLine?.trim()) {
       const removed = linesEl.createDiv({ cls: "pr-review-suggestion-line is-removed" });
       removed.createSpan({ cls: "pr-review-suggestion-marker", text: "-" });
-      removed.createSpan({ text: originalLine });
+      this.renderHighlightedSuggestionText(removed, originalLine, suggestionLines[0] ?? "", "removed");
     }
-    for (const line of suggestion.trimEnd().split(/\r?\n/)) {
+    for (const line of suggestionLines) {
       const added = linesEl.createDiv({ cls: "pr-review-suggestion-line is-added" });
       added.createSpan({ cls: "pr-review-suggestion-marker", text: "+" });
-      added.createSpan({ text: line });
+      this.renderHighlightedSuggestionText(added, line, originalLine ?? "", "added");
     }
+  }
+
+  private renderHighlightedSuggestionText(container: HTMLElement, text: string, compareTo: string, type: "added" | "removed") {
+    const wrap = container.createSpan({ cls: "pr-review-suggestion-text" });
+    if (!compareTo || text === compareTo) {
+      wrap.setText(text);
+      return;
+    }
+
+    let prefix = 0;
+    while (prefix < text.length && prefix < compareTo.length && text[prefix] === compareTo[prefix]) prefix++;
+
+    let suffix = 0;
+    while (
+      suffix < text.length - prefix
+      && suffix < compareTo.length - prefix
+      && text[text.length - 1 - suffix] === compareTo[compareTo.length - 1 - suffix]
+    ) {
+      suffix++;
+    }
+
+    const before = text.slice(0, prefix);
+    const changed = text.slice(prefix, text.length - suffix);
+    const after = suffix ? text.slice(text.length - suffix) : "";
+
+    if (before) wrap.createSpan({ text: before });
+    if (changed) wrap.createSpan({ cls: `pr-review-suggestion-changed is-${type}`, text: changed });
+    if (after) wrap.createSpan({ text: after });
   }
 
   private splitSuggestionFences(body: string) {
