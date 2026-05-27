@@ -89,6 +89,14 @@
   padding: 8px 10px;
 }
 
+.pr-review-statusbar-button {
+  cursor: pointer;
+}
+
+.pr-review-statusbar-button:hover {
+  color: var(--text-normal);
+}
+
 .pr-review-list,
 .pr-review-files,
 .pr-review-comments,

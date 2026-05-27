@@ -44,6 +44,10 @@ interface EditorReviewMarker {
 
 const setReviewMarkers = StateEffect.define<EditorReviewMarker[]>();
 
+function normalizeReviewLine(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
 export default class PrReviewPlugin extends Plugin {
   settings: PrReviewSettings = DEFAULT_SETTINGS;
   statusBar!: HTMLElement;
@@ -62,6 +66,10 @@ export default class PrReviewPlugin extends Plugin {
     this.registerEditorExtension(createReviewEditorExtension(this));
     this.addSettingTab(new PrReviewSettingTab(this.app, this));
     this.statusBar = this.addStatusBarItem();
+    this.statusBar.addClass("pr-review-statusbar-button");
+    this.statusBar.title = "Open PR Review for the current Markdown file";
+    this.statusBar.onclick = () => this.activateFileReviewView(true);
+    this.addRibbonIcon("git-pull-request", "Review current file PRs", () => this.activateFileReviewView(true));
     this.updateStatus("Ready");
 
     this.addCommand({
@@ -278,6 +286,7 @@ function createReviewEditorExtension(plugin: PrReviewPlugin) {
           if (marker.line.newLine === undefined) return [];
           if (marker.line.newLine < 1 || marker.line.newLine > transaction.state.doc.lines) return [];
           const line = transaction.state.doc.line(marker.line.newLine);
+          if (normalizeReviewLine(line.text) !== normalizeReviewLine(marker.line.content)) return [];
           const cls = marker.line.type === "added" ? "pr-review-editor-line-added" : "pr-review-editor-line-context";
           return [
             Decoration.line({ class: cls }).range(line.from),
@@ -486,12 +495,18 @@ class CurrentFileReviewView extends ItemView {
     new ButtonComponent(actions).setButtonText("Open PR").onClick(() => window.open(pr.html_url));
     new ButtonComponent(actions).setButtonText("Submit review").setCta().onClick(() => this.openSubmitModal());
 
+    const reviewable = this.getReviewableLines();
     const markers = this.getReviewMarkers();
-    const mapped = markers.filter((marker) => marker.line.newLine !== undefined && this.lineExists(marker.line.newLine)).length;
     container.createDiv({
       cls: "pr-review-section-summary",
-      text: `${markers.length} reviewable changed lines, ${mapped} currently visible in this local file`
+      text: `${reviewable.length} reviewable changed lines, ${markers.length} safely overlaid in this local file`
     });
+    if (markers.length < reviewable.length) {
+      container.createDiv({
+        cls: "pr-review-warning",
+        text: "Inline markers are only shown where the current local source line matches the PR head line. Use the patch below as the source of truth."
+      });
+    }
 
     this.renderFileComments(container);
     this.renderFilePatch(container, file);
@@ -524,7 +539,7 @@ class CurrentFileReviewView extends ItemView {
       details.createEl("summary", { cls: "pr-review-hunk-header", text: hunk.header });
       for (const line of hunk.lines) {
         const row = details.createDiv({ cls: `pr-review-diff-line is-${line.type}` });
-        row.toggleClass("is-unmapped", line.newLine !== undefined && !this.lineExists(line.newLine));
+        row.toggleClass("is-unmapped", line.canComment && !this.lineMatches(line));
         row.createSpan({ cls: "pr-review-line-no", text: line.oldLine?.toString() ?? "" });
         row.createSpan({ cls: "pr-review-line-no", text: line.newLine?.toString() ?? "" });
         row.createSpan({ cls: "pr-review-line-text", text: `${line.type === "added" ? "+" : line.type === "removed" ? "-" : " "}${line.content}` });
@@ -577,14 +592,21 @@ class CurrentFileReviewView extends ItemView {
   private getReviewMarkers(): EditorReviewMarker[] {
     if (!this.selectedMatch) return [];
     const commentedLines = new Set(this.comments.map((comment) => comment.line ?? comment.original_line).filter((line): line is number => typeof line === "number"));
-    return parsePatch(this.selectedMatch.file.patch).flatMap((hunk) => hunk.lines)
-      .filter((line) => line.canComment && line.newLine !== undefined)
+    return this.getReviewableLines()
+      .filter((line) => this.lineMatches(line))
+      .filter((line) => line.type === "added" || commentedLines.has(line.newLine!))
       .map((line) => ({
         path: this.selectedMatch!.file.filename,
         prNumber: this.selectedMatch!.pr.number,
         line,
         hasExistingComment: commentedLines.has(line.newLine!)
       }));
+  }
+
+  private getReviewableLines(): DiffLine[] {
+    if (!this.selectedMatch) return [];
+    return parsePatch(this.selectedMatch.file.patch).flatMap((hunk) => hunk.lines)
+      .filter((line) => line.canComment && line.newLine !== undefined);
   }
 
   private updateEditorMarkers() {
@@ -594,6 +616,13 @@ class CurrentFileReviewView extends ItemView {
   private lineExists(line: number) {
     const cm = this.plugin.getEditorViewForFile(this.file?.path);
     return Boolean(cm && line >= 1 && line <= cm.state.doc.lines);
+  }
+
+  private lineMatches(line: DiffLine) {
+    if (line.newLine === undefined) return false;
+    const cm = this.plugin.getEditorViewForFile(this.file?.path);
+    if (!cm || line.newLine < 1 || line.newLine > cm.state.doc.lines) return false;
+    return normalizeReviewLine(cm.state.doc.line(line.newLine).text) === normalizeReviewLine(line.content);
   }
 
   private ensureReady() {
