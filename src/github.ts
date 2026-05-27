@@ -1,5 +1,5 @@
 import { Notice, requestUrl } from "obsidian";
-import type { PendingReviewComment, PullRequestFile, PullRequestSummary, ReviewComment, ReviewEvent } from "./types";
+import type { FilePullRequestMatch, PendingReviewComment, PullRequestFile, PullRequestSummary, ReviewComment, ReviewEvent } from "./types";
 
 export class GitHubClient {
   constructor(private readonly host: string, private readonly token: string) {}
@@ -52,6 +52,17 @@ export class PullRequestService {
 
   async listFiles(owner: string, repo: string, number: number): Promise<PullRequestFile[]> {
     return this.client.request<PullRequestFile[]>(`/repos/${owner}/${repo}/pulls/${number}/files?per_page=100`);
+  }
+
+  async listPullRequestsForFile(owner: string, repo: string, base: string, path: string): Promise<FilePullRequestMatch[]> {
+    const prs = await this.listPullRequests(owner, repo, base);
+    const matches: FilePullRequestMatch[] = [];
+    await Promise.all(prs.map(async (pr) => {
+      const files = await this.listFiles(owner, repo, pr.number);
+      const match = files.find((file) => file.filename === path || file.previous_filename === path);
+      if (match) matches.push({ pr, file: match });
+    }));
+    return matches.sort((a, b) => new Date(b.pr.updated_at).getTime() - new Date(a.pr.updated_at).getTime());
   }
 
   async listReviewComments(owner: string, repo: string, number: number): Promise<ReviewComment[]> {

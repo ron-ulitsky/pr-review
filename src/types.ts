@@ -38,6 +38,11 @@ export interface PullRequestFile {
   previous_filename?: string;
 }
 
+export interface FilePullRequestMatch {
+  pr: PullRequestSummary;
+  file: PullRequestFile;
+}
+
 export interface ReviewComment {
   id: number;
   user: { login: string };
