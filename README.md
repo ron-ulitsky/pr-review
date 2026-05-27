@@ -33,6 +33,14 @@ Docs globs: **/*.md, **/*.mdx, docs/**
 - Detect Obsidian Git when installed and use its commands where discoverable.
 - Fall back to local `git` commands on desktop when enabled.
 
+## Markdown Fixture Table
+
+| Review surface | Markdown content | Expected behavior |
+| --- | --- | --- |
+| Inline comments | `**bold**`, links, lists, and code fences | Render comment bodies as Markdown. |
+| Added rows | Tables changed in pull requests | Preserve enough context to keep table rows readable. |
+| Suggestions | GitHub suggestion fences | Show replacement text without breaking the surrounding diff. |
+
 ## Manual Installation
 
 1. Clone or copy this folder into your vault at `.obsidian/plugins/pr-review-for-obsidian`.
