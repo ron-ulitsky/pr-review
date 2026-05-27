@@ -171,13 +171,36 @@ export default class PrReviewPlugin extends Plugin {
   }
 
   getActiveMarkdownFile(): TFile | null {
-    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const view = this.getMarkdownViewForReview();
     const file = view?.file;
     if (file?.extension === "md" || file?.extension === "mdx") {
       this.lastActiveMarkdownFile = file;
       return file;
     }
     return this.lastActiveMarkdownFile;
+  }
+
+  getMarkdownViewForReview(): MarkdownView | null {
+    const active = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (active?.file && (active.file.extension === "md" || active.file.extension === "mdx")) {
+      this.lastActiveMarkdownFile = active.file;
+      return active;
+    }
+
+    const leaves = this.app.workspace.getLeavesOfType("markdown");
+    const byLastFile = leaves.find((leaf) => {
+      const view = leaf.view;
+      return view instanceof MarkdownView && view.file?.path === this.lastActiveMarkdownFile?.path;
+    })?.view;
+    if (byLastFile instanceof MarkdownView) return byLastFile;
+
+    const firstMarkdown = leaves.find((leaf) => leaf.view instanceof MarkdownView)?.view;
+    if (firstMarkdown instanceof MarkdownView && firstMarkdown.file) {
+      this.lastActiveMarkdownFile = firstMarkdown.file;
+      return firstMarkdown;
+    }
+
+    return null;
   }
 
   openEditorCommentModal(path: string, line: DiffLine) {
@@ -215,7 +238,7 @@ export default class PrReviewPlugin extends Plugin {
   }
 
   private updateStatusForActiveFile() {
-    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const view = this.getMarkdownViewForReview();
     const file = view?.file;
     if (file?.extension === "md" || file?.extension === "mdx") this.lastActiveMarkdownFile = file;
     if (file) this.updateStatus(`Active file: ${file.path}`);
@@ -323,8 +346,8 @@ class InDocumentDiffController {
   constructor(private readonly plugin: PrReviewPlugin) {}
 
   async toggle() {
-    const view = this.plugin.app.workspace.getActiveViewOfType(MarkdownView);
-    const file = this.plugin.getActiveMarkdownFile();
+    const view = this.plugin.getMarkdownViewForReview();
+    const file = view?.file ?? this.plugin.getActiveMarkdownFile();
     if (!view || !file) {
       new Notice("Open a Markdown or MDX file first.");
       return;
@@ -344,10 +367,11 @@ class InDocumentDiffController {
 
   private createHost(view: MarkdownView): HTMLElement {
     const content = (view as any).contentEl as HTMLElement | undefined;
-    const root = content?.querySelector(".markdown-preview-view") as HTMLElement | null;
-    const parent = root ?? content ?? view.containerEl;
+    const root = content?.querySelector(".markdown-preview-view, .markdown-source-view") as HTMLElement | null;
+    const parent = root ?? content ?? view.containerEl.querySelector(".view-content") ?? view.containerEl;
     const host = createDiv({ cls: "pr-review-in-document" });
     parent.prepend(host);
+    host.scrollIntoView({ block: "start", behavior: "smooth" });
     return host;
   }
 
