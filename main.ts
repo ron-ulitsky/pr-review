@@ -171,8 +171,7 @@ export default class PrReviewPlugin extends Plugin {
   }
 
   getActiveMarkdownFile(): TFile | null {
-    const view = this.getMarkdownViewForReview();
-    const file = view?.file;
+    const file = this.getMarkdownFileForReview();
     if (file?.extension === "md" || file?.extension === "mdx") {
       this.lastActiveMarkdownFile = file;
       return file;
@@ -180,17 +179,40 @@ export default class PrReviewPlugin extends Plugin {
     return this.lastActiveMarkdownFile;
   }
 
-  getMarkdownViewForReview(): MarkdownView | null {
+  getMarkdownFileForReview(): TFile | null {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (activeFile && (activeFile.extension === "md" || activeFile.extension === "mdx")) {
+      this.lastActiveMarkdownFile = activeFile;
+      return activeFile;
+    }
+    return this.lastActiveMarkdownFile;
+  }
+
+  getMarkdownViewForReview(filePath?: string): MarkdownView | null {
+    const activeLeafView = this.app.workspace.activeLeaf?.view;
+    if (activeLeafView instanceof MarkdownView
+      && activeLeafView.file
+      && (!filePath || activeLeafView.file.path === filePath)
+      && this.isVisibleMarkdownView(activeLeafView)) {
+      this.lastActiveMarkdownFile = activeLeafView.file;
+      return activeLeafView;
+    }
+
     const active = this.app.workspace.getActiveViewOfType(MarkdownView);
-    if (active?.file && (active.file.extension === "md" || active.file.extension === "mdx")) {
+    if (active?.file
+      && (active.file.extension === "md" || active.file.extension === "mdx")
+      && (!filePath || active.file.path === filePath)
+      && this.isVisibleMarkdownView(active)) {
       this.lastActiveMarkdownFile = active.file;
       return active;
     }
 
-    const leaves = this.app.workspace.getLeavesOfType("markdown");
+    const targetPath = filePath ?? this.lastActiveMarkdownFile?.path;
+    const leaves = this.app.workspace.getLeavesOfType("markdown")
+      .filter((leaf) => leaf.view instanceof MarkdownView && this.isVisibleMarkdownView(leaf.view));
     const byLastFile = leaves.find((leaf) => {
       const view = leaf.view;
-      return view instanceof MarkdownView && view.file?.path === this.lastActiveMarkdownFile?.path;
+      return view instanceof MarkdownView && view.file?.path === targetPath;
     })?.view;
     if (byLastFile instanceof MarkdownView) return byLastFile;
 
@@ -201,6 +223,12 @@ export default class PrReviewPlugin extends Plugin {
     }
 
     return null;
+  }
+
+  private isVisibleMarkdownView(view: MarkdownView): boolean {
+    if (!view.containerEl.isConnected) return false;
+    const rect = view.containerEl.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
   }
 
   openEditorCommentModal(path: string, line: DiffLine) {
@@ -335,6 +363,7 @@ function createReviewEditorExtension(plugin: PrReviewPlugin) {
 }
 
 class InDocumentDiffController {
+  private activePath: string | null = null;
   private host: HTMLElement | null = null;
   private file: TFile | null = null;
   private matches: FilePullRequestMatch[] = [];
@@ -346,33 +375,53 @@ class InDocumentDiffController {
   constructor(private readonly plugin: PrReviewPlugin) {}
 
   async toggle() {
-    const view = this.plugin.getMarkdownViewForReview();
-    const file = view?.file ?? this.plugin.getActiveMarkdownFile();
+    const file = this.plugin.getMarkdownFileForReview();
+    const view = this.plugin.getMarkdownViewForReview(file?.path);
     if (!view || !file) {
       new Notice("Open a Markdown or MDX file first.");
       return;
     }
 
-    const existing = view.containerEl.querySelector(".pr-review-in-document");
-    if (existing) {
-      existing.remove();
+    if (this.activePath === file.path && this.getHost(view)) {
+      this.removeHosts();
+      this.activePath = null;
       this.host = null;
+      new Notice(`Hidden PR diff for ${file.path}`);
       return;
     }
 
+    this.removeHosts();
+    this.activePath = file.path;
     this.file = file;
-    this.host = this.createHost(view);
-    await this.load();
+    this.host = this.createHost(view, file);
+    void this.load();
   }
 
-  private createHost(view: MarkdownView): HTMLElement {
-    const content = (view as any).contentEl as HTMLElement | undefined;
-    const root = content?.querySelector(".markdown-preview-view, .markdown-source-view") as HTMLElement | null;
-    const parent = root ?? content ?? view.containerEl.querySelector(".view-content") ?? view.containerEl;
+  private removeHosts() {
+    document.querySelectorAll(".pr-review-in-document").forEach((node) => node.remove());
+  }
+
+  private getHost(view: MarkdownView): HTMLElement | null {
+    return view.containerEl.querySelector(".pr-review-in-document");
+  }
+
+  private createHost(view: MarkdownView, file: TFile): HTMLElement {
+    const target = this.getMountTarget(view);
     const host = createDiv({ cls: "pr-review-in-document" });
-    parent.prepend(host);
-    host.scrollIntoView({ block: "start", behavior: "smooth" });
+    host.dataset.prReviewPath = file.path;
+    target.prepend(host);
     return host;
+  }
+
+  private getMountTarget(view: MarkdownView): HTMLElement {
+    const container = view.containerEl;
+    return (
+      container.querySelector(".markdown-preview-sizer")
+      ?? container.querySelector(".markdown-preview-view")
+      ?? container.querySelector(".markdown-rendered")
+      ?? container.querySelector(".view-content")
+      ?? container
+    ) as HTMLElement;
   }
 
   private async load() {
@@ -407,26 +456,12 @@ class InDocumentDiffController {
   private renderShell(message: string, warning = false) {
     if (!this.host) return;
     this.host.empty();
-    const top = this.host.createDiv({ cls: "pr-review-in-document-top" });
-    top.createDiv({ cls: "pr-review-title", text: "Unified PR diff" });
-    new ButtonComponent(top).setButtonText("Close").onClick(() => {
-      this.host?.remove();
-      this.host = null;
-    });
     this.host.createDiv({ cls: warning ? "pr-review-warning" : "pr-review-status", text: message });
   }
 
   private async render() {
     if (!this.host || !this.file) return;
     this.host.empty();
-    const top = this.host.createDiv({ cls: "pr-review-in-document-top" });
-    top.createDiv({ cls: "pr-review-title", text: "Unified PR diff" });
-    const actions = top.createDiv({ cls: "pr-review-file-actions" });
-    new ButtonComponent(actions).setButtonText("Refresh").onClick(() => this.load());
-    new ButtonComponent(actions).setButtonText("Close").onClick(() => {
-      this.host?.remove();
-      this.host = null;
-    });
 
     if (this.matches.length === 0) {
       this.host.createDiv({ cls: "pr-review-empty", text: "No open PRs touch this file." });
@@ -436,18 +471,7 @@ class InDocumentDiffController {
     if (this.matches.length > 1) this.renderSelector(this.host);
     if (!this.selectedMatch) return;
 
-    const { pr, file } = this.selectedMatch;
-    const header = this.host.createDiv({ cls: "pr-review-file-context-header" });
-    const title = header.createDiv();
-    title.createDiv({ cls: "pr-review-title", text: `#${pr.number} ${pr.title}` });
-    title.createDiv({ cls: "pr-review-meta", text: `${file.status} - +${file.additions}/-${file.deletions} - ${pr.head.ref} into ${pr.base.ref}` });
-    const headerActions = header.createDiv({ cls: "pr-review-file-actions" });
-    new ButtonComponent(headerActions).setButtonText("Open PR").onClick(() => window.open(pr.html_url));
-    new ButtonComponent(headerActions).setButtonText("Submit review").setCta().onClick(() => this.openSubmitModal());
-
-    const reviewable = parsePatch(file.patch).flatMap((hunk) => hunk.lines).filter((line) => line.canComment && line.newLine !== undefined);
-    this.host.createDiv({ cls: "pr-review-section-summary", text: `${reviewable.length} reviewable changed lines` });
-    await this.renderPatch(this.host, file);
+    await this.renderPatch(this.host, this.selectedMatch.file);
   }
 
   private renderSelector(container: HTMLElement) {
@@ -468,7 +492,6 @@ class InDocumentDiffController {
 
   private async renderPatch(container: HTMLElement, file: PullRequestFile) {
     const section = container.createDiv({ cls: "pr-review-files" });
-    section.createDiv({ cls: "pr-review-section-summary", text: "Patch for selected PR/file" });
     if (!file.patch) {
       section.createDiv({ cls: "pr-review-warning", text: "GitHub did not include a patch for this file." });
       return;
@@ -476,32 +499,35 @@ class InDocumentDiffController {
 
     const diff = section.createDiv({ cls: "pr-review-diff pr-review-rendered-diff" });
     for (const hunk of parsePatch(file.patch)) {
-      const details = diff.createEl("details", { cls: "pr-review-hunk" });
-      details.open = true;
-      details.createEl("summary", { cls: "pr-review-hunk-header", text: hunk.header });
+      const hunkEl = diff.createDiv({ cls: "pr-review-hunk pr-review-flat-hunk" });
+      let group: DiffLine[] = [];
+      const flushGroup = async () => {
+        if (group.length === 0) return;
+        await this.renderMarkdownGroup(hunkEl, group);
+        group = [];
+      };
+
       for (const line of hunk.lines) {
-        const row = details.createDiv({ cls: `pr-review-diff-line pr-review-rendered-diff-line is-${line.type}` });
-        row.createSpan({ cls: "pr-review-line-no", text: line.oldLine?.toString() ?? "" });
-        row.createSpan({ cls: "pr-review-line-no", text: line.newLine?.toString() ?? "" });
-        const rendered = row.createDiv({ cls: "pr-review-rendered-line-text" });
-        rendered.createSpan({ cls: "pr-review-diff-marker", text: line.type === "added" ? "+" : line.type === "removed" ? "-" : " " });
-        const markdown = rendered.createDiv({ cls: "pr-review-rendered-markdown" });
-        if (line.content.trim()) {
-          await MarkdownRenderer.render(this.plugin.app, line.content, markdown, this.file?.path ?? "", this.plugin);
-        } else {
-          markdown.createSpan({ text: " " });
+        if (group.length > 0 && group[0].type !== line.type) await flushGroup();
+        group.push(line);
+        if (this.hasInlineThread(file.filename, line)) {
+          await flushGroup();
+          this.renderInlineThreads(hunkEl, file.filename, line);
         }
-        if (line.canComment) {
-          new ButtonComponent(row.createDiv())
-            .setButtonText("+")
-            .setTooltip("Add review comment")
-            .onClick(() => {
-              this.inlineComposerKey = this.lineKey(file.filename, line);
-              void this.render();
-            });
-        }
-        this.renderInlineThreads(details, file.filename, line);
       }
+      await flushGroup();
+    }
+  }
+
+  private async renderMarkdownGroup(container: HTMLElement, lines: DiffLine[]) {
+    const type = lines[0]?.type ?? "context";
+    const block = container.createDiv({ cls: `pr-review-diff-block is-${type}` });
+    const markdown = block.createDiv({ cls: "pr-review-rendered-markdown" });
+    const source = lines.map((line) => line.content).join("\n");
+    if (source.trim()) {
+      await MarkdownRenderer.render(this.plugin.app, source, markdown, this.file?.path ?? "", this.plugin);
+    } else {
+      markdown.createDiv({ cls: "pr-review-blank-line" });
     }
   }
 
@@ -513,7 +539,7 @@ class InDocumentDiffController {
     if (comments.length === 0 && pending.length === 0 && !showComposer) return;
 
     const wrap = container.createDiv({ cls: "pr-review-inline-thread-row" });
-    wrap.createDiv({ cls: "pr-review-inline-thread-gutter", text: line.newLine.toString() });
+    wrap.createDiv({ cls: "pr-review-inline-thread-gutter" });
     const thread = wrap.createDiv({ cls: "pr-review-inline-thread" });
 
     for (const comment of comments) {
@@ -544,6 +570,13 @@ class InDocumentDiffController {
     }
 
     if (showComposer) this.renderInlineComposer(thread, path, line);
+  }
+
+  private hasInlineThread(path: string, line: DiffLine) {
+    if (!line.canComment || line.newLine === undefined) return false;
+    const hasComment = this.comments.some((comment) => (comment.line ?? comment.original_line) === line.newLine);
+    const hasPending = (this.draft?.pendingComments ?? []).some((comment) => comment.path === path && comment.line === line.newLine);
+    return hasComment || hasPending || this.inlineComposerKey === this.lineKey(path, line);
   }
 
   private renderInlineComposer(container: HTMLElement, path: string, line: DiffLine) {
