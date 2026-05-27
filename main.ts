@@ -376,7 +376,7 @@ class CurrentFileReviewView extends ItemView {
       .filter((comment) => comment.path === match.file.filename || comment.path === match.file.previous_filename);
     this.draft = await this.plugin.draftStore.setMetadata(owner, repo, prNumber, match.pr);
     this.inlineComposerKey = null;
-    this.updateEditorMarkers();
+    this.plugin.clearEditorReviewMarkers();
     if (rerender) this.render();
   }
 
@@ -498,17 +498,10 @@ class CurrentFileReviewView extends ItemView {
     new ButtonComponent(actions).setButtonText("Submit review").setCta().onClick(() => this.openSubmitModal());
 
     const reviewable = this.getReviewableLines();
-    const markers = this.getReviewMarkers();
     container.createDiv({
       cls: "pr-review-section-summary",
-      text: `${reviewable.length} reviewable changed lines, ${markers.length} safely overlaid in this local file`
+      text: `${reviewable.length} reviewable changed lines in the unified diff`
     });
-    if (markers.length < reviewable.length) {
-      container.createDiv({
-        cls: "pr-review-warning",
-        text: "Inline markers are only shown where the current local source line matches the PR head line. Use the patch below as the source of truth."
-      });
-    }
 
     this.renderFilePatch(container, file);
   }
@@ -539,7 +532,6 @@ class CurrentFileReviewView extends ItemView {
       details.createEl("summary", { cls: "pr-review-hunk-header", text: hunk.header });
       for (const line of hunk.lines) {
         const row = details.createDiv({ cls: `pr-review-diff-line is-${line.type}` });
-        row.toggleClass("is-unmapped", line.canComment && !this.lineMatches(line));
         row.createSpan({ cls: "pr-review-line-no", text: line.oldLine?.toString() ?? "" });
         row.createSpan({ cls: "pr-review-line-no", text: line.newLine?.toString() ?? "" });
         row.createSpan({ cls: "pr-review-line-text", text: `${line.type === "added" ? "+" : line.type === "removed" ? "-" : " "}${line.content}` });

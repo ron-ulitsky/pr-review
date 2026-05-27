@@ -238,7 +238,7 @@
 .pr-review-diff {
   border: 1px solid var(--pr-review-border);
   border-radius: 6px;
-  overflow: hidden;
+  overflow: auto;
   margin-top: 8px;
   font-family: var(--font-monospace);
   font-size: var(--font-smaller);
@@ -298,6 +298,17 @@
 .pr-review-line-text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.pr-review-file-mode .pr-review-diff-line {
+  grid-template-columns: 34px 34px max-content auto;
+  min-width: 100%;
+  width: max-content;
+}
+
+.pr-review-file-mode .pr-review-line-text {
+  white-space: pre;
+  overflow-wrap: normal;
 }
 
 .pr-review-comment-body {
