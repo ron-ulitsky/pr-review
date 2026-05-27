@@ -141,7 +141,12 @@ export default class PrReviewPlugin extends Plugin {
   }
 
   async activateView() {
-    const leaf = this.app.workspace.getLeaf(false);
+    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_PR_REVIEW)[0];
+    if (existing) {
+      this.app.workspace.revealLeaf(existing);
+      return;
+    }
+    const leaf = (this.app.workspace as any).getLeaf("split") as WorkspaceLeaf;
     await leaf.setViewState({ type: VIEW_TYPE_PR_REVIEW, active: true });
     this.app.workspace.revealLeaf(leaf);
   }
