@@ -238,19 +238,28 @@ class PrReviewView extends ItemView {
     container.addClass("pr-review-view");
 
     this.renderToolbar(container);
-    if (this.loading) container.createDiv({ cls: "pr-review-empty", text: "Loading pull request data..." });
+    if (this.loading) container.createDiv({ cls: "pr-review-status", text: "Loading pull request data..." });
     if (this.error) container.createDiv({ cls: "pr-review-warning", text: this.error });
 
-    if (!this.selectedPr) {
-      this.renderPrList(container);
+    const layout = container.createDiv({ cls: "pr-review-layout" });
+    const sidebar = layout.createDiv({ cls: "pr-review-sidebar" });
+    const main = layout.createDiv({ cls: "pr-review-main" });
+
+    this.renderPrList(sidebar);
+    if (this.selectedPr) {
+      this.renderPrDetail(main);
     } else {
-      this.renderPrDetail(container);
+      this.renderWelcome(main);
     }
   }
 
   private renderToolbar(container: HTMLElement) {
     const toolbar = container.createDiv({ cls: "pr-review-toolbar" });
-    new ButtonComponent(toolbar).setButtonText("PRs").onClick(() => {
+    const repoText = this.plugin.settings.defaultOwner && this.plugin.settings.defaultRepo
+      ? `${this.plugin.settings.defaultOwner}/${this.plugin.settings.defaultRepo}`
+      : "No repository configured";
+    toolbar.createDiv({ cls: "pr-review-toolbar-title", text: repoText });
+    new ButtonComponent(toolbar).setButtonText("All PRs").onClick(() => {
       this.selectedPr = null;
       this.files = [];
       this.comments = [];
@@ -269,7 +278,9 @@ class PrReviewView extends ItemView {
   }
 
   private renderPrList(container: HTMLElement) {
-    container.createDiv({ cls: "pr-review-title", text: "Open pull requests" });
+    const heading = container.createDiv({ cls: "pr-review-sidebar-heading" });
+    heading.createDiv({ cls: "pr-review-title", text: "Open PRs" });
+    heading.createDiv({ cls: "pr-review-count", text: this.prs.length.toString() });
     if (!this.plugin.settings.defaultOwner || !this.plugin.settings.defaultRepo) {
       container.createDiv({ cls: "pr-review-empty", text: "Configure owner, repo, and GitHub token in settings." });
       return;
@@ -282,16 +293,31 @@ class PrReviewView extends ItemView {
     const list = container.createDiv({ cls: "pr-review-list" });
     for (const pr of this.prs) {
       const row = list.createDiv({ cls: "pr-review-pr-row" });
+      row.toggleClass("is-selected", this.selectedPr?.number === pr.number);
       row.onclick = () => this.openPr(pr.number);
       const top = row.createDiv({ cls: "pr-review-row-top" });
-      top.createDiv({ text: `#${pr.number} ${pr.title}` });
-      top.createDiv({ cls: "pr-review-small", text: pr.reviewState ?? "review: unknown" });
+      top.createDiv({ cls: "pr-review-pr-title", text: pr.title });
+      top.createDiv({ cls: "pr-review-pr-number", text: `#${pr.number}` });
       row.createDiv({
         cls: "pr-review-meta",
-        text: `${pr.user.login} - ${pr.changed_files ?? "?"} files - updated ${new Date(pr.updated_at).toLocaleString()}`
+        text: `${pr.user.login} - ${pr.changed_files ?? "?"} files - ${this.formatRelativeDate(pr.updated_at)}`
       });
+      row.createDiv({ cls: "pr-review-review-state", text: pr.reviewState ? `Review: ${pr.reviewState}` : "Review: unknown" });
       const labels = row.createDiv({ cls: "pr-review-labels" });
       for (const label of pr.labels ?? []) labels.createSpan({ cls: "pr-review-label", text: label.name });
+    }
+  }
+
+  private renderWelcome(container: HTMLElement) {
+    const welcome = container.createDiv({ cls: "pr-review-welcome" });
+    welcome.createDiv({ cls: "pr-review-title", text: "Select a pull request" });
+    welcome.createDiv({
+      cls: "pr-review-meta",
+      text: "Choose an open PR from the left to inspect Markdown changes, read existing review comments, and draft a review."
+    });
+    const steps = welcome.createEl("ol", { cls: "pr-review-steps" });
+    for (const step of ["Open PR #1 for the README test", "Review the Files and Comments tabs", "Add a pending comment from a diff line", "Submit a COMMENT review when ready"]) {
+      steps.createEl("li", { text: step });
     }
   }
 
@@ -306,11 +332,11 @@ class PrReviewView extends ItemView {
       text: `${this.selectedPr.user.login} - ${this.selectedPr.head.ref} into ${this.selectedPr.base.ref}`
     });
     const actions = header.createDiv({ cls: "pr-review-file-actions" });
-    new ButtonComponent(actions).setButtonText("GitHub").onClick(() => window.open(this.selectedPr?.html_url));
-    new ButtonComponent(actions).setButtonText("Checkout PR branch").onClick(() => this.checkoutSelectedPr());
-    new ButtonComponent(actions).setButtonText("Create local review branch").onClick(() => this.createLocalReviewBranch());
-    new ButtonComponent(actions).setButtonText("Pull latest").onClick(() => this.gitAction("pull"));
-    new ButtonComponent(actions).setButtonText("Push current branch").onClick(() => this.gitAction("push"));
+    new ButtonComponent(actions).setButtonText("Open on GitHub").onClick(() => window.open(this.selectedPr?.html_url));
+    new ButtonComponent(actions).setButtonText("Checkout").onClick(() => this.checkoutSelectedPr());
+    new ButtonComponent(actions).setButtonText("New review branch").onClick(() => this.createLocalReviewBranch());
+    new ButtonComponent(actions).setButtonText("Pull").onClick(() => this.gitAction("pull"));
+    new ButtonComponent(actions).setButtonText("Push").onClick(() => this.gitAction("push"));
     if (this.plugin.gitAdapter?.openSourceControlView) {
       new ButtonComponent(actions).setButtonText("Source control").onClick(() => this.gitAction("source"));
     }
@@ -336,6 +362,9 @@ class PrReviewView extends ItemView {
 
   private renderFiles(container: HTMLElement) {
     const filesEl = container.createDiv({ cls: "pr-review-files" });
+    const summary = filesEl.createDiv({ cls: "pr-review-section-summary" });
+    summary.createSpan({ text: `${this.files.length} docs file${this.files.length === 1 ? "" : "s"}` });
+    summary.createSpan({ cls: "pr-review-small", text: this.plugin.settings.docsFileGlobs });
     if (this.files.length === 0) {
       filesEl.createDiv({ cls: "pr-review-empty", text: "No Markdown/docs files matched the configured globs." });
       return;
@@ -344,7 +373,9 @@ class PrReviewView extends ItemView {
     for (const file of this.files) {
       const fileEl = filesEl.createDiv({ cls: "pr-review-file" });
       const top = fileEl.createDiv({ cls: "pr-review-file-top" });
-      top.createDiv({ text: `${file.filename} (${file.status}, +${file.additions}/-${file.deletions})` });
+      const fileTitle = top.createDiv();
+      fileTitle.createDiv({ cls: "pr-review-file-name", text: file.filename });
+      fileTitle.createDiv({ cls: "pr-review-meta", text: `${file.status} - +${file.additions}/-${file.deletions}` });
       const actions = top.createDiv({ cls: "pr-review-file-actions" });
       new ButtonComponent(actions).setButtonText("Open local").onClick(() => this.openLocalFile(file.filename));
       new ButtonComponent(actions).setButtonText("Open GitHub").onClick(() => window.open(file.blob_url));
@@ -382,6 +413,7 @@ class PrReviewView extends ItemView {
 
   private renderComments(container: HTMLElement) {
     const root = container.createDiv({ cls: "pr-review-comments" });
+    root.createDiv({ cls: "pr-review-section-summary", text: `${this.comments.length} existing review comment${this.comments.length === 1 ? "" : "s"}` });
     if (this.comments.length === 0) {
       root.createDiv({ cls: "pr-review-empty", text: "No existing review comments found." });
       return;
@@ -397,7 +429,7 @@ class PrReviewView extends ItemView {
           cls: "pr-review-meta",
           text: `${comment.user.login} - line ${comment.line ?? comment.original_line ?? "?"}${comment.outdated ? " - outdated" : ""}`
         });
-        item.createEl("pre", { text: comment.body });
+        item.createEl("pre", { cls: "pr-review-comment-body", text: comment.body });
         if (comment.html_url) new ButtonComponent(item).setButtonText("Open on GitHub").onClick(() => window.open(comment.html_url));
         item.createDiv({ cls: "pr-review-small", text: "Resolving review threads is unsupported in this MVP." });
       }
@@ -406,7 +438,9 @@ class PrReviewView extends ItemView {
 
   private renderPending(container: HTMLElement) {
     const root = container.createDiv({ cls: "pr-review-pending" });
-    new ButtonComponent(root).setButtonText("Submit review").setCta().onClick(() => this.openSubmitModal());
+    const pendingTop = root.createDiv({ cls: "pr-review-section-summary" });
+    pendingTop.createSpan({ text: `${this.draft?.pendingComments.length ?? 0} pending comment${this.draft?.pendingComments.length === 1 ? "" : "s"}` });
+    new ButtonComponent(pendingTop).setButtonText("Submit review").setCta().onClick(() => this.openSubmitModal());
     if (!this.draft || this.draft.pendingComments.length === 0) {
       root.createDiv({ cls: "pr-review-empty", text: "No pending review comments." });
       return;
@@ -414,7 +448,7 @@ class PrReviewView extends ItemView {
     for (const comment of this.draft.pendingComments) {
       const item = root.createDiv({ cls: "pr-review-pending-comment" });
       item.createDiv({ cls: "pr-review-meta", text: `${comment.path}:${comment.line}` });
-      item.createEl("pre", { text: comment.body });
+      item.createEl("pre", { cls: "pr-review-comment-body", text: comment.body });
       new ButtonComponent(item).setButtonText("Remove").onClick(async () => {
         if (!this.selectedPr) return;
         this.draft = await this.plugin.draftStore.removePending(
@@ -529,6 +563,18 @@ class PrReviewView extends ItemView {
       throw new Error("Default owner and repo are required.");
     }
   }
+
+  private formatRelativeDate(dateText: string): string {
+    const date = new Date(dateText);
+    if (Number.isNaN(date.getTime())) return "updated date unknown";
+    const diffMs = Date.now() - date.getTime();
+    const minutes = Math.max(1, Math.round(diffMs / 60000));
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 48) return `${hours}h ago`;
+    const days = Math.round(hours / 24);
+    return `${days}d ago`;
+  }
 }
 
 class AddCommentModal extends Modal {
@@ -545,6 +591,7 @@ class AddCommentModal extends Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.empty();
+    contentEl.addClass("pr-review-modal");
     contentEl.createEl("h2", { text: `Comment on ${this.path}:${this.line.newLine}` });
     contentEl.createDiv({ cls: "pr-review-small", text: "Suggestion text will be wrapped in GitHub's suggestion fence." });
     const normal = contentEl.createEl("textarea", { attr: { placeholder: "Comment before suggestion" } });
@@ -577,6 +624,7 @@ class SubmitReviewModal extends Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.empty();
+    contentEl.addClass("pr-review-modal");
     contentEl.createEl("h2", { text: `Submit review for #${this.pr.number}` });
     contentEl.createDiv({ cls: "pr-review-small", text: `${this.draft.pendingComments.length} pending line comments` });
     const body = contentEl.createEl("textarea", { attr: { placeholder: "Overall review body" } });
