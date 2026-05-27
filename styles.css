@@ -205,6 +205,24 @@
   gap: 12px;
 }
 
+.pr-review-in-document {
+  border: 1px solid var(--pr-review-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+  margin: 0 0 24px 0;
+  padding: 12px;
+}
+
+.pr-review-in-document-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--pr-review-border);
+  padding-bottom: 8px;
+  margin-bottom: 10px;
+}
+
 .pr-review-file-pr-select,
 .pr-review-file-context-header {
   border: 1px solid var(--pr-review-border);
@@ -309,6 +327,50 @@
 .pr-review-file-mode .pr-review-line-text {
   white-space: pre;
   overflow-wrap: normal;
+}
+
+.pr-review-rendered-diff {
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-small);
+}
+
+.pr-review-rendered-diff-line {
+  grid-template-columns: 42px 42px minmax(0, 1fr) auto;
+  align-items: stretch;
+}
+
+.pr-review-rendered-line-text {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 6px;
+  align-items: start;
+}
+
+.pr-review-diff-marker {
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  user-select: none;
+}
+
+.pr-review-rendered-markdown > :first-child {
+  margin-top: 0;
+}
+
+.pr-review-rendered-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.pr-review-rendered-markdown h1,
+.pr-review-rendered-markdown h2,
+.pr-review-rendered-markdown h3,
+.pr-review-rendered-markdown h4,
+.pr-review-rendered-markdown h5,
+.pr-review-rendered-markdown h6,
+.pr-review-rendered-markdown p,
+.pr-review-rendered-markdown ul,
+.pr-review-rendered-markdown ol,
+.pr-review-rendered-markdown pre {
+  margin-block: 0;
 }
 
 .pr-review-comment-body {

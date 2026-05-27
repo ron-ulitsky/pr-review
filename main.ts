@@ -3,6 +3,7 @@ import {
   ButtonComponent,
   ItemView,
   MarkdownView,
+  MarkdownRenderer,
   Modal,
   Notice,
   Plugin,
@@ -54,27 +55,29 @@ export default class PrReviewPlugin extends Plugin {
   draftStore!: ReviewDraftStore;
   gitAdapter: GitAdapter | null = null;
   private lastActiveMarkdownFile: TFile | null = null;
+  private inDocumentDiff!: InDocumentDiffController;
 
   async onload() {
     const data = await this.loadData();
     this.settings = normalizeSettings(data?.settings ?? data);
     this.draftStore = new ReviewDraftStore(this);
     this.gitAdapter = await chooseGitAdapter(this.app, this.settings.preferObsidianGit, this.settings.useLocalGitFallback);
+    this.inDocumentDiff = new InDocumentDiffController(this);
 
     this.registerView(VIEW_TYPE_PR_REVIEW, (leaf) => new PrReviewView(leaf, this));
     this.registerView(VIEW_TYPE_FILE_REVIEW, (leaf) => new CurrentFileReviewView(leaf, this));
     this.addSettingTab(new PrReviewSettingTab(this.app, this));
     this.statusBar = this.addStatusBarItem();
     this.statusBar.addClass("pr-review-statusbar-button");
-    this.statusBar.title = "Show unified PR diff for the current file";
-    this.statusBar.onclick = () => this.activateFileReviewView(true);
-    this.addRibbonIcon("git-pull-request", "Show unified PR diff", () => this.activateFileReviewView(true));
+    this.statusBar.title = "Toggle unified PR diff in the current file";
+    this.statusBar.onclick = () => this.inDocumentDiff.toggle();
+    this.addRibbonIcon("git-pull-request", "Toggle unified PR diff", () => this.inDocumentDiff.toggle());
     this.updateStatus("Ready");
 
     this.addCommand({
       id: "open-pr-browser",
-      name: "PR Review: Show unified diff for current file",
-      callback: () => this.activateFileReviewView(true)
+      name: "PR Review: Toggle unified diff in current file",
+      callback: () => this.inDocumentDiff.toggle()
     });
     this.addCommand({
       id: "refresh-current-pr",
@@ -107,6 +110,9 @@ export default class PrReviewPlugin extends Plugin {
 
     this.app.workspace.onLayoutReady(() => {
       for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_PR_REVIEW)) {
+        leaf.detach();
+      }
+      for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_FILE_REVIEW)) {
         leaf.detach();
       }
       this.clearEditorReviewMarkers();
@@ -303,6 +309,304 @@ function createReviewEditorExtension(plugin: PrReviewPlugin) {
     },
     provide: (field) => EditorView.decorations.from(field)
   });
+}
+
+class InDocumentDiffController {
+  private host: HTMLElement | null = null;
+  private file: TFile | null = null;
+  private matches: FilePullRequestMatch[] = [];
+  private selectedMatch: FilePullRequestMatch | null = null;
+  private comments: ReviewComment[] = [];
+  private draft: ReviewDraft | null = null;
+  private inlineComposerKey: string | null = null;
+
+  constructor(private readonly plugin: PrReviewPlugin) {}
+
+  async toggle() {
+    const view = this.plugin.app.workspace.getActiveViewOfType(MarkdownView);
+    const file = this.plugin.getActiveMarkdownFile();
+    if (!view || !file) {
+      new Notice("Open a Markdown or MDX file first.");
+      return;
+    }
+
+    const existing = view.containerEl.querySelector(".pr-review-in-document");
+    if (existing) {
+      existing.remove();
+      this.host = null;
+      return;
+    }
+
+    this.file = file;
+    this.host = this.createHost(view);
+    await this.load();
+  }
+
+  private createHost(view: MarkdownView): HTMLElement {
+    const content = (view as any).contentEl as HTMLElement | undefined;
+    const root = content?.querySelector(".markdown-preview-view") as HTMLElement | null;
+    const parent = root ?? content ?? view.containerEl;
+    const host = createDiv({ cls: "pr-review-in-document" });
+    parent.prepend(host);
+    return host;
+  }
+
+  private async load() {
+    if (!this.host || !this.file) return;
+    this.renderShell("Finding PRs that touch this file...");
+    try {
+      this.ensureReady();
+      this.matches = await this.plugin.getPrService().listPullRequestsForFile(
+        this.plugin.settings.defaultOwner,
+        this.plugin.settings.defaultRepo,
+        this.plugin.settings.defaultBaseBranch,
+        this.file.path
+      );
+      this.selectedMatch = this.matches[0] ?? null;
+      if (this.selectedMatch) await this.loadSelected();
+      await this.render();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.renderShell(message, true);
+      showGitHubError(error);
+    }
+  }
+
+  private async loadSelected() {
+    if (!this.selectedMatch) return;
+    const { defaultOwner: owner, defaultRepo: repo } = this.plugin.settings;
+    this.comments = (await this.plugin.getPrService().listReviewComments(owner, repo, this.selectedMatch.pr.number))
+      .filter((comment) => comment.path === this.selectedMatch?.file.filename || comment.path === this.selectedMatch?.file.previous_filename);
+    this.draft = await this.plugin.draftStore.setMetadata(owner, repo, this.selectedMatch.pr.number, this.selectedMatch.pr);
+  }
+
+  private renderShell(message: string, warning = false) {
+    if (!this.host) return;
+    this.host.empty();
+    const top = this.host.createDiv({ cls: "pr-review-in-document-top" });
+    top.createDiv({ cls: "pr-review-title", text: "Unified PR diff" });
+    new ButtonComponent(top).setButtonText("Close").onClick(() => {
+      this.host?.remove();
+      this.host = null;
+    });
+    this.host.createDiv({ cls: warning ? "pr-review-warning" : "pr-review-status", text: message });
+  }
+
+  private async render() {
+    if (!this.host || !this.file) return;
+    this.host.empty();
+    const top = this.host.createDiv({ cls: "pr-review-in-document-top" });
+    top.createDiv({ cls: "pr-review-title", text: "Unified PR diff" });
+    const actions = top.createDiv({ cls: "pr-review-file-actions" });
+    new ButtonComponent(actions).setButtonText("Refresh").onClick(() => this.load());
+    new ButtonComponent(actions).setButtonText("Close").onClick(() => {
+      this.host?.remove();
+      this.host = null;
+    });
+
+    if (this.matches.length === 0) {
+      this.host.createDiv({ cls: "pr-review-empty", text: "No open PRs touch this file." });
+      return;
+    }
+
+    if (this.matches.length > 1) this.renderSelector(this.host);
+    if (!this.selectedMatch) return;
+
+    const { pr, file } = this.selectedMatch;
+    const header = this.host.createDiv({ cls: "pr-review-file-context-header" });
+    const title = header.createDiv();
+    title.createDiv({ cls: "pr-review-title", text: `#${pr.number} ${pr.title}` });
+    title.createDiv({ cls: "pr-review-meta", text: `${file.status} - +${file.additions}/-${file.deletions} - ${pr.head.ref} into ${pr.base.ref}` });
+    const headerActions = header.createDiv({ cls: "pr-review-file-actions" });
+    new ButtonComponent(headerActions).setButtonText("Open PR").onClick(() => window.open(pr.html_url));
+    new ButtonComponent(headerActions).setButtonText("Submit review").setCta().onClick(() => this.openSubmitModal());
+
+    const reviewable = parsePatch(file.patch).flatMap((hunk) => hunk.lines).filter((line) => line.canComment && line.newLine !== undefined);
+    this.host.createDiv({ cls: "pr-review-section-summary", text: `${reviewable.length} reviewable changed lines` });
+    await this.renderPatch(this.host, file);
+  }
+
+  private renderSelector(container: HTMLElement) {
+    const wrap = container.createDiv({ cls: "pr-review-file-pr-select" });
+    wrap.createDiv({ cls: "pr-review-title", text: "Pull requests touching this file" });
+    const select = wrap.createEl("select");
+    for (const match of this.matches) {
+      select.createEl("option", { text: `#${match.pr.number} ${match.pr.title}`, value: String(match.pr.number) });
+    }
+    select.value = this.selectedMatch ? String(this.selectedMatch.pr.number) : "";
+    select.onchange = async () => {
+      this.selectedMatch = this.matches.find((match) => match.pr.number === Number(select.value)) ?? null;
+      this.inlineComposerKey = null;
+      await this.loadSelected();
+      await this.render();
+    };
+  }
+
+  private async renderPatch(container: HTMLElement, file: PullRequestFile) {
+    const section = container.createDiv({ cls: "pr-review-files" });
+    section.createDiv({ cls: "pr-review-section-summary", text: "Patch for selected PR/file" });
+    if (!file.patch) {
+      section.createDiv({ cls: "pr-review-warning", text: "GitHub did not include a patch for this file." });
+      return;
+    }
+
+    const diff = section.createDiv({ cls: "pr-review-diff pr-review-rendered-diff" });
+    for (const hunk of parsePatch(file.patch)) {
+      const details = diff.createEl("details", { cls: "pr-review-hunk" });
+      details.open = true;
+      details.createEl("summary", { cls: "pr-review-hunk-header", text: hunk.header });
+      for (const line of hunk.lines) {
+        const row = details.createDiv({ cls: `pr-review-diff-line pr-review-rendered-diff-line is-${line.type}` });
+        row.createSpan({ cls: "pr-review-line-no", text: line.oldLine?.toString() ?? "" });
+        row.createSpan({ cls: "pr-review-line-no", text: line.newLine?.toString() ?? "" });
+        const rendered = row.createDiv({ cls: "pr-review-rendered-line-text" });
+        rendered.createSpan({ cls: "pr-review-diff-marker", text: line.type === "added" ? "+" : line.type === "removed" ? "-" : " " });
+        const markdown = rendered.createDiv({ cls: "pr-review-rendered-markdown" });
+        if (line.content.trim()) {
+          await MarkdownRenderer.render(this.plugin.app, line.content, markdown, this.file?.path ?? "", this.plugin);
+        } else {
+          markdown.createSpan({ text: " " });
+        }
+        if (line.canComment) {
+          new ButtonComponent(row.createDiv())
+            .setButtonText("+")
+            .setTooltip("Add review comment")
+            .onClick(() => {
+              this.inlineComposerKey = this.lineKey(file.filename, line);
+              void this.render();
+            });
+        }
+        this.renderInlineThreads(details, file.filename, line);
+      }
+    }
+  }
+
+  private renderInlineThreads(container: HTMLElement, path: string, line: DiffLine) {
+    if (!line.canComment || line.newLine === undefined) return;
+    const comments = this.comments.filter((comment) => (comment.line ?? comment.original_line) === line.newLine);
+    const pending = (this.draft?.pendingComments ?? []).filter((comment) => comment.path === path && comment.line === line.newLine);
+    const showComposer = this.inlineComposerKey === this.lineKey(path, line);
+    if (comments.length === 0 && pending.length === 0 && !showComposer) return;
+
+    const wrap = container.createDiv({ cls: "pr-review-inline-thread-row" });
+    wrap.createDiv({ cls: "pr-review-inline-thread-gutter", text: line.newLine.toString() });
+    const thread = wrap.createDiv({ cls: "pr-review-inline-thread" });
+
+    for (const comment of comments) {
+      const item = thread.createDiv({ cls: "pr-review-inline-comment" });
+      const top = item.createDiv({ cls: "pr-review-inline-comment-top" });
+      top.createSpan({ cls: "pr-review-inline-author", text: comment.user.login });
+      top.createSpan({ cls: "pr-review-small", text: comment.outdated ? "outdated" : "existing comment" });
+      item.createEl("pre", { cls: "pr-review-comment-body", text: comment.body });
+      if (comment.html_url) new ButtonComponent(item).setButtonText("Open on GitHub").onClick(() => window.open(comment.html_url));
+    }
+
+    for (const comment of pending) {
+      const item = thread.createDiv({ cls: "pr-review-inline-comment is-pending" });
+      const top = item.createDiv({ cls: "pr-review-inline-comment-top" });
+      top.createSpan({ cls: "pr-review-inline-author", text: "Pending review comment" });
+      top.createSpan({ cls: "pr-review-small", text: "not submitted" });
+      item.createEl("pre", { cls: "pr-review-comment-body", text: comment.body });
+      new ButtonComponent(item).setButtonText("Remove").onClick(async () => {
+        if (!this.selectedMatch) return;
+        this.draft = await this.plugin.draftStore.removePending(
+          this.plugin.settings.defaultOwner,
+          this.plugin.settings.defaultRepo,
+          this.selectedMatch.pr.number,
+          comment.id
+        );
+        await this.render();
+      });
+    }
+
+    if (showComposer) this.renderInlineComposer(thread, path, line);
+  }
+
+  private renderInlineComposer(container: HTMLElement, path: string, line: DiffLine) {
+    const composer = container.createDiv({ cls: "pr-review-inline-composer" });
+    composer.createDiv({ cls: "pr-review-meta", text: `New review comment on line ${line.newLine}` });
+    const normal = composer.createEl("textarea", { attr: { placeholder: "Comment before suggestion" } });
+    const suggestion = composer.createEl("textarea", { attr: { placeholder: "Replacement text for suggestion mode" } });
+    const followup = composer.createEl("textarea", { attr: { placeholder: "Comment after suggestion" } });
+    const actions = composer.createDiv({ cls: "pr-review-comment-actions" });
+    new ButtonComponent(actions).setButtonText("Add pending comment").setCta().onClick(async () => {
+      if (!normal.value.trim() && !suggestion.value.trim() && !followup.value.trim()) {
+        new Notice("Add a comment or suggestion first.");
+        return;
+      }
+      await this.addPendingComment(path, line, normal.value, suggestion.value, followup.value);
+      this.inlineComposerKey = null;
+      await this.render();
+    });
+    new ButtonComponent(actions).setButtonText("Cancel").onClick(() => {
+      this.inlineComposerKey = null;
+      void this.render();
+    });
+  }
+
+  private async addPendingComment(path: string, line: DiffLine, normalComment: string, suggestion: string, followupComment: string) {
+    if (!this.selectedMatch) return;
+    const payload = toReviewCommentPayload(path, line, composeCommentBody(normalComment, suggestion, followupComment));
+    const comment: PendingReviewComment = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      path: payload.path,
+      line: payload.line,
+      side: payload.side,
+      body: payload.body,
+      normalComment,
+      suggestion,
+      followupComment,
+      diffPosition: line.position,
+      createdAt: new Date().toISOString()
+    };
+    this.draft = await this.plugin.draftStore.addPending(
+      this.plugin.settings.defaultOwner,
+      this.plugin.settings.defaultRepo,
+      this.selectedMatch.pr.number,
+      comment
+    );
+  }
+
+  private openSubmitModal() {
+    if (!this.selectedMatch || !this.draft) return;
+    new InDocumentSubmitModal(this.plugin.app, this, this.selectedMatch.pr, this.draft).open();
+  }
+
+  async submitReview(event: ReviewEvent, body: string) {
+    if (!this.selectedMatch || !this.draft) return;
+    await this.plugin.draftStore.setReviewBody(
+      this.plugin.settings.defaultOwner,
+      this.plugin.settings.defaultRepo,
+      this.selectedMatch.pr.number,
+      body
+    );
+    await this.plugin.getPrService().submitReview(
+      this.plugin.settings.defaultOwner,
+      this.plugin.settings.defaultRepo,
+      this.selectedMatch.pr.number,
+      event,
+      body,
+      this.draft.pendingComments
+    );
+    this.draft = await this.plugin.draftStore.clearPending(
+      this.plugin.settings.defaultOwner,
+      this.plugin.settings.defaultRepo,
+      this.selectedMatch.pr.number
+    );
+    new Notice("Review submitted.");
+    await this.loadSelected();
+    await this.render();
+  }
+
+  private lineKey(path: string, line: DiffLine): string {
+    return `${path}:${line.newLine ?? "?"}:${line.position}`;
+  }
+
+  private ensureReady() {
+    if (!this.plugin.settings.githubToken) throw new Error("GitHub token is required.");
+    if (!this.plugin.settings.defaultOwner || !this.plugin.settings.defaultRepo) throw new Error("Default owner and repo are required.");
+    if (!this.file) throw new Error("Open a Markdown or MDX file first.");
+  }
 }
 
 class CurrentFileReviewView extends ItemView {
@@ -1175,6 +1479,43 @@ class AddCommentModal extends Modal {
       this.close();
     });
     new ButtonComponent(actions).setButtonText("Cancel").onClick(() => this.close());
+  }
+}
+
+class InDocumentSubmitModal extends Modal {
+  constructor(
+    app: App,
+    private readonly controller: InDocumentDiffController,
+    private readonly pr: PullRequestSummary,
+    private readonly draft: ReviewDraft
+  ) {
+    super(app);
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("pr-review-modal");
+    contentEl.createEl("h2", { text: `Submit review for #${this.pr.number}` });
+    contentEl.createDiv({ cls: "pr-review-small", text: `${this.draft.pendingComments.length} pending review comments across this PR` });
+    const body = contentEl.createEl("textarea", { attr: { placeholder: "Overall review body" } });
+    body.value = this.draft.reviewBody;
+    const actions = contentEl.createDiv({ cls: "pr-review-pending-actions" });
+    this.addSubmitButton(actions, "COMMENT", "Comment", body);
+    this.addSubmitButton(actions, "APPROVE", "Approve", body);
+    this.addSubmitButton(actions, "REQUEST_CHANGES", "Request changes", body);
+    new ButtonComponent(actions).setButtonText("Cancel").onClick(() => this.close());
+  }
+
+  private addSubmitButton(container: HTMLElement, event: ReviewEvent, label: string, body: HTMLTextAreaElement) {
+    new ButtonComponent(container).setButtonText(label).onClick(async () => {
+      try {
+        await this.controller.submitReview(event, body.value);
+        this.close();
+      } catch (error) {
+        showGitHubError(error);
+      }
+    });
   }
 }
 
