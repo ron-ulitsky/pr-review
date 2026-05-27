@@ -63,13 +63,12 @@ export default class PrReviewPlugin extends Plugin {
 
     this.registerView(VIEW_TYPE_PR_REVIEW, (leaf) => new PrReviewView(leaf, this));
     this.registerView(VIEW_TYPE_FILE_REVIEW, (leaf) => new CurrentFileReviewView(leaf, this));
-    this.registerEditorExtension(createReviewEditorExtension(this));
     this.addSettingTab(new PrReviewSettingTab(this.app, this));
     this.statusBar = this.addStatusBarItem();
     this.statusBar.addClass("pr-review-statusbar-button");
-    this.statusBar.title = "Open PR Review for the current Markdown file";
-    this.statusBar.onclick = () => this.activateFileReviewView(true);
-    this.addRibbonIcon("git-pull-request", "Review current file PRs", () => this.activateFileReviewView(true));
+    this.statusBar.title = "Open PR Review browser";
+    this.statusBar.onclick = () => this.activateView();
+    this.addRibbonIcon("git-pull-request", "Open PR Review browser", () => this.activateView());
     this.updateStatus("Ready");
 
     this.addCommand({
@@ -78,24 +77,14 @@ export default class PrReviewPlugin extends Plugin {
       callback: () => this.activateView()
     });
     this.addCommand({
-      id: "show-current-file-review",
-      name: "PR Review: Show reviews for current file",
-      checkCallback: (checking) => {
-        const file = this.getActiveMarkdownFile();
-        if (!file) return false;
-        if (!checking) void this.activateFileReviewView(true);
-        return true;
-      }
-    });
-    this.addCommand({
       id: "refresh-current-pr",
       name: "PR Review: Refresh current pull request",
-      callback: () => this.withAnyReviewView((prView) => prView.refresh(), (fileView) => fileView.refreshForActiveFile())
+      callback: () => this.withView((view) => view.refresh())
     });
     this.addCommand({
       id: "submit-pending-review",
       name: "PR Review: Submit pending review",
-      callback: () => this.withAnyReviewView((prView) => prView.openSubmitModal(), (fileView) => fileView.openSubmitModal())
+      callback: () => this.withView((view) => view.openSubmitModal())
     });
     this.addCommand({
       id: "checkout-selected-pr-branch",
@@ -113,7 +102,14 @@ export default class PrReviewPlugin extends Plugin {
     this.addCommand({
       id: "clear-pending-review-comments",
       name: "PR Review: Clear pending review comments",
-      callback: () => this.withAnyReviewView((prView) => prView.clearPending(), (fileView) => fileView.clearPending())
+      callback: () => this.withView((view) => view.clearPending())
+    });
+
+    this.app.workspace.onLayoutReady(() => {
+      for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_FILE_REVIEW)) {
+        leaf.detach();
+      }
+      this.clearEditorReviewMarkers();
     });
 
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
