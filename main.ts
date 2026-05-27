@@ -859,8 +859,8 @@ class InDocumentDiffController {
       if (group.length > 0 && group[0].type !== line.type) await flushGroup();
       group.push(line);
       if (this.hasInlineThread(file.filename, line)) {
-        await flushGroup();
-        this.renderInlineThreads(hunkEl, file.filename, line);
+          await flushGroup();
+          await this.renderInlineThreads(hunkEl, file.filename, line);
       }
     }
     await flushGroup();
@@ -898,7 +898,7 @@ class InDocumentDiffController {
     }
   }
 
-  private renderInlineThreads(container: HTMLElement, path: string, line: DiffLine) {
+  private async renderInlineThreads(container: HTMLElement, path: string, line: DiffLine) {
     if (!line.canComment || line.newLine === undefined) return;
     const comments = this.comments.filter((comment) => (comment.line ?? comment.original_line) === line.newLine);
     const pending = (this.draft?.pendingComments ?? []).filter((comment) => comment.path === path && comment.line === line.newLine);
@@ -911,7 +911,7 @@ class InDocumentDiffController {
       const top = item.createDiv({ cls: "pr-review-inline-comment-top" });
       top.createSpan({ cls: "pr-review-inline-author", text: comment.user.login });
       top.createSpan({ cls: "pr-review-small", text: comment.outdated ? "outdated" : "existing comment" });
-      item.createEl("pre", { cls: "pr-review-comment-body", text: comment.body });
+      await this.renderCommentBody(item, comment.body);
       if (comment.html_url) new ButtonComponent(item).setButtonText("Open on GitHub").onClick(() => window.open(comment.html_url));
     }
 
@@ -920,7 +920,7 @@ class InDocumentDiffController {
       const top = item.createDiv({ cls: "pr-review-inline-comment-top" });
       top.createSpan({ cls: "pr-review-inline-author", text: "Pending review comment" });
       top.createSpan({ cls: "pr-review-small", text: "not submitted" });
-      item.createEl("pre", { cls: "pr-review-comment-body", text: comment.body });
+      await this.renderCommentBody(item, comment.body);
       new ButtonComponent(item).setButtonText("Remove").onClick(async () => {
         if (!this.selectedMatch) return;
         this.draft = await this.plugin.draftStore.removePending(
@@ -934,6 +934,13 @@ class InDocumentDiffController {
     }
 
     if (showComposer) this.renderInlineComposer(thread, path, line);
+  }
+
+  private async renderCommentBody(container: HTMLElement, body: string) {
+    const bodyEl = container.createDiv({ cls: "pr-review-comment-body markdown-rendered" });
+    if (body.trim()) {
+      await MarkdownRenderer.render(this.plugin.app, body, bodyEl, this.file?.path ?? "", this.plugin);
+    }
   }
 
   private hasInlineThread(path: string, line: DiffLine) {

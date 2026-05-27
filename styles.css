@@ -228,7 +228,12 @@
   margin: 4px auto 8px auto;
   max-width: var(--file-line-width);
   padding: 0;
+  user-select: text;
   width: calc(100% - 32px);
+}
+
+.pr-review-editor-panel * {
+  user-select: text;
 }
 
 .pr-review-editor-hunk-panel .pr-review-hunk + .pr-review-hunk {
@@ -453,6 +458,33 @@
   margin-block: 0;
 }
 
+.pr-review-editor-panel .pr-review-rendered-markdown pre {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none;
+  padding: 0 !important;
+  margin: 0.15em 0 !important;
+}
+
+.pr-review-editor-panel .pr-review-rendered-markdown code {
+  background: transparent;
+  color: var(--text-normal);
+}
+
+.pr-review-editor-panel .pr-review-rendered-markdown pre code {
+  display: block;
+  font-size: var(--font-text-size);
+  line-height: var(--line-height-normal);
+  white-space: pre-wrap;
+}
+
+.pr-review-editor-panel .pr-review-rendered-markdown .copy-code-button,
+.pr-review-editor-panel .pr-review-rendered-markdown button.copy-code-button,
+.pr-review-editor-panel .pr-review-rendered-markdown pre > button,
+.pr-review-editor-panel .pr-review-rendered-markdown .codeblock-button {
+  display: none;
+}
+
 .pr-review-rendered-markdown p {
   line-height: var(--line-height-normal);
 }
@@ -483,7 +515,6 @@
 
 .pr-review-comment-body {
   margin: 6px 0;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
   background: var(--background-secondary-alt);
   border: 1px solid var(--background-modifier-border-hover);
@@ -491,6 +522,14 @@
   padding: 6px 8px;
   font-size: var(--font-ui-small);
   line-height: 1.35;
+}
+
+.pr-review-comment-body > :first-child {
+  margin-top: 0;
+}
+
+.pr-review-comment-body > :last-child {
+  margin-bottom: 0;
 }
 
 .pr-review-inline-thread-row {
