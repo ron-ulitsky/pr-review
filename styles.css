@@ -228,12 +228,14 @@
   margin: 4px auto 8px auto;
   max-width: var(--file-line-width);
   padding: 0;
-  user-select: text;
+  -webkit-user-select: text !important;
+  user-select: text !important;
   width: calc(100% - 32px);
 }
 
 .pr-review-editor-panel * {
-  user-select: text;
+  -webkit-user-select: text !important;
+  user-select: text !important;
 }
 
 .pr-review-editor-hunk-panel .pr-review-hunk + .pr-review-hunk {
@@ -530,6 +532,102 @@
 
 .pr-review-comment-body > :last-child {
   margin-bottom: 0;
+}
+
+.pr-review-comment-markdown > :first-child {
+  margin-top: 0;
+}
+
+.pr-review-comment-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.pr-review-comment-markdown p,
+.pr-review-comment-markdown ul,
+.pr-review-comment-markdown ol,
+.pr-review-comment-markdown blockquote,
+.pr-review-comment-markdown pre {
+  margin-block: 0.2em;
+}
+
+.pr-review-comment-markdown ul,
+.pr-review-comment-markdown ol {
+  padding-inline-start: 1.35em;
+}
+
+.pr-review-comment-markdown li {
+  margin-block: 0;
+  padding-block: 0;
+}
+
+.pr-review-comment-markdown li > p {
+  margin-block: 0;
+}
+
+.pr-review-comment-markdown .task-list-item-checkbox {
+  margin: 0 0.45em 0 0;
+}
+
+.pr-review-comment-markdown blockquote {
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--interactive-accent);
+}
+
+.pr-review-comment-markdown pre {
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+}
+
+.pr-review-suggestion-block {
+  margin: 6px 0;
+  border: 1px solid rgba(46, 160, 67, 0.45);
+  border-left: 3px solid rgba(46, 160, 67, 0.75);
+  border-radius: 4px;
+  background: var(--background-primary);
+}
+
+.pr-review-suggestion-label {
+  padding: 5px 8px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  border-bottom: 1px solid rgba(46, 160, 67, 0.25);
+}
+
+.pr-review-suggestion-block pre {
+  margin: 0;
+  padding: 8px;
+  white-space: pre-wrap;
+  background: transparent;
+  border: 0;
+}
+
+.pr-review-suggestion-lines {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+}
+
+.pr-review-suggestion-line {
+  display: grid;
+  grid-template-columns: 1.5em minmax(0, 1fr);
+  gap: 4px;
+  padding: 4px 8px;
+  white-space: pre-wrap;
+}
+
+.pr-review-suggestion-line.is-removed {
+  background: var(--pr-review-deleted);
+}
+
+.pr-review-suggestion-line.is-added {
+  background: var(--pr-review-added);
+}
+
+.pr-review-suggestion-marker {
+  color: var(--text-muted);
+  user-select: none !important;
 }
 
 .pr-review-inline-thread-row {

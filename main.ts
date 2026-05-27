@@ -366,7 +366,7 @@ function createReviewEditorExtension(plugin: PrReviewPlugin) {
     }
 
     ignoreEvent() {
-      return false;
+      return true;
     }
   }
 
@@ -877,25 +877,6 @@ class InDocumentDiffController {
       markdown.createDiv({ cls: "pr-review-blank-line" });
     }
 
-    const path = this.selectedMatch?.file.filename ?? "";
-    const blockHasThread = lines.some((line) => this.hasInlineThread(path, line));
-    const commentable = blockHasThread ? [] : lines.filter((line) =>
-      line.canComment
-      && line.newLine !== undefined
-      && line.type !== "removed"
-    );
-    if (commentable.length > 0) {
-      const actions = block.createDiv({ cls: "pr-review-inline-actions" });
-      const line = commentable[commentable.length - 1];
-      new ButtonComponent(actions)
-        .setButtonText("Add comment")
-        .setTooltip(`Add review comment on line ${line.newLine}`)
-        .onClick(() => {
-          if (!this.selectedMatch) return;
-          this.inlineComposerKey = this.lineKey(this.selectedMatch.file.filename, line);
-          void this.render();
-        });
-    }
   }
 
   private async renderInlineThreads(container: HTMLElement, path: string, line: DiffLine) {
@@ -910,8 +891,8 @@ class InDocumentDiffController {
       const item = thread.createDiv({ cls: "pr-review-inline-comment" });
       const top = item.createDiv({ cls: "pr-review-inline-comment-top" });
       top.createSpan({ cls: "pr-review-inline-author", text: comment.user.login });
-      top.createSpan({ cls: "pr-review-small", text: comment.outdated ? "outdated" : "existing comment" });
-      await this.renderCommentBody(item, comment.body);
+      if (comment.outdated) top.createSpan({ cls: "pr-review-small", text: "outdated" });
+      await this.renderCommentBody(item, comment.body, line.content);
       if (comment.html_url) new ButtonComponent(item).setButtonText("Open on GitHub").onClick(() => window.open(comment.html_url));
     }
 
@@ -920,7 +901,7 @@ class InDocumentDiffController {
       const top = item.createDiv({ cls: "pr-review-inline-comment-top" });
       top.createSpan({ cls: "pr-review-inline-author", text: "Pending review comment" });
       top.createSpan({ cls: "pr-review-small", text: "not submitted" });
-      await this.renderCommentBody(item, comment.body);
+      await this.renderCommentBody(item, comment.body, line.content);
       new ButtonComponent(item).setButtonText("Remove").onClick(async () => {
         if (!this.selectedMatch) return;
         this.draft = await this.plugin.draftStore.removePending(
@@ -936,11 +917,51 @@ class InDocumentDiffController {
     if (showComposer) this.renderInlineComposer(thread, path, line);
   }
 
-  private async renderCommentBody(container: HTMLElement, body: string) {
+  private async renderCommentBody(container: HTMLElement, body: string, originalLine?: string) {
     const bodyEl = container.createDiv({ cls: "pr-review-comment-body markdown-rendered" });
-    if (body.trim()) {
-      await MarkdownRenderer.render(this.plugin.app, body, bodyEl, this.file?.path ?? "", this.plugin);
+    const parts = this.splitSuggestionFences(body);
+    for (const part of parts) {
+      if (!part.content.trim()) continue;
+      if (part.type === "markdown") {
+        const markdownEl = bodyEl.createDiv({ cls: "pr-review-comment-markdown" });
+        await MarkdownRenderer.render(this.plugin.app, part.content, markdownEl, this.file?.path ?? "", this.plugin);
+      } else {
+        this.renderSuggestionBlock(bodyEl, part.content, originalLine);
+      }
     }
+  }
+
+  private renderSuggestionBlock(container: HTMLElement, suggestion: string, originalLine?: string) {
+    const suggestionEl = container.createDiv({ cls: "pr-review-suggestion-block" });
+    suggestionEl.createDiv({ cls: "pr-review-suggestion-label", text: "Suggested change" });
+    const linesEl = suggestionEl.createDiv({ cls: "pr-review-suggestion-lines" });
+    if (originalLine?.trim()) {
+      const removed = linesEl.createDiv({ cls: "pr-review-suggestion-line is-removed" });
+      removed.createSpan({ cls: "pr-review-suggestion-marker", text: "-" });
+      removed.createSpan({ text: originalLine });
+    }
+    for (const line of suggestion.trimEnd().split(/\r?\n/)) {
+      const added = linesEl.createDiv({ cls: "pr-review-suggestion-line is-added" });
+      added.createSpan({ cls: "pr-review-suggestion-marker", text: "+" });
+      added.createSpan({ text: line });
+    }
+  }
+
+  private splitSuggestionFences(body: string) {
+    const parts: Array<{ type: "markdown" | "suggestion"; content: string }> = [];
+    const regex = /```suggestion\r?\n([\s\S]*?)```/g;
+    let cursor = 0;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(body)) !== null) {
+      if (match.index > cursor) {
+        parts.push({ type: "markdown", content: body.slice(cursor, match.index) });
+      }
+      parts.push({ type: "suggestion", content: match[1] });
+      cursor = match.index + match[0].length;
+    }
+    if (cursor < body.length) parts.push({ type: "markdown", content: body.slice(cursor) });
+    if (parts.length === 0) parts.push({ type: "markdown", content: body });
+    return parts;
   }
 
   private hasInlineThread(path: string, line: DiffLine) {
