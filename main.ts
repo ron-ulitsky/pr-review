@@ -271,6 +271,8 @@ export default class PrReviewPlugin extends Plugin {
   }
 
   openEditorCommentModal(path: string, line: DiffLine) {
+    if (this.inDocumentDiff.openEditorComment(path, line)) return;
+
     const fileReviewView = this.getFileReviewView();
     if (fileReviewView) {
       fileReviewView.openCommentModal(path, line);
@@ -387,7 +389,9 @@ function createReviewEditorExtension(plugin: PrReviewPlugin) {
       wrap.className = "pr-review-editor-widget";
       const button = document.createElement("button");
       button.className = this.marker.hasExistingComment ? "pr-review-editor-comment-button has-comment" : "pr-review-editor-comment-button";
-      button.textContent = this.marker.hasExistingComment ? "Review comment" : "Add review comment";
+      button.textContent = "+";
+      button.title = this.marker.hasExistingComment ? "Add another review comment" : "Add review comment";
+      button.setAttribute("aria-label", button.title);
       button.type = "button";
       button.onclick = (event) => {
         event.preventDefault();
@@ -396,6 +400,10 @@ function createReviewEditorExtension(plugin: PrReviewPlugin) {
       };
       wrap.appendChild(button);
       return wrap;
+    }
+
+    ignoreEvent() {
+      return true;
     }
   }
 
@@ -411,9 +419,7 @@ function createReviewEditorExtension(plugin: PrReviewPlugin) {
       if (marker.line.newLine < 1 || marker.line.newLine > state.doc.lines) return [];
       const line = state.doc.line(marker.line.newLine);
       if (normalizeReviewLine(line.text) !== normalizeReviewLine(marker.line.content)) return [];
-      const cls = marker.line.type === "added" ? "pr-review-editor-line-added" : "pr-review-editor-line-context";
       return [
-        Decoration.line({ class: cls }).range(line.from),
         Decoration.widget({
           widget: new ReviewActionWidget(marker),
           side: 1
@@ -475,6 +481,15 @@ class InDocumentDiffController {
   private surfaceMode: "dom" | "editor" = "dom";
 
   constructor(private readonly plugin: PrReviewPlugin) {}
+
+  openEditorComment(path: string, line: DiffLine): boolean {
+    if (!this.isEnabled || !this.selectedMatch || !this.file) return false;
+    if (path !== this.selectedMatch.file.filename && path !== this.selectedMatch.file.previous_filename) return false;
+    if (!line.canComment || line.newLine === undefined) return false;
+    this.inlineComposerKey = this.lineKey(path, line);
+    void this.render();
+    return true;
+  }
 
   async toggle() {
     const file = this.plugin.getMarkdownFileForReview();
@@ -570,6 +585,8 @@ class InDocumentDiffController {
       } else {
         this.disable();
       }
+    } else if (this.surfaceMode === "editor") {
+      void this.render();
     } else if (!this.host?.isConnected && !this.isLoading) {
       const view = this.plugin.getMarkdownViewForReview(currentFile.path);
       if (view) {
@@ -695,6 +712,7 @@ class InDocumentDiffController {
 
     if (this.surfaceMode === "editor") {
       this.plugin.updateEditorReviewPanels(this.createEditorPanels(), this.file.path);
+      this.plugin.updateEditorReviewMarkers(this.createEditorMarkers(), this.file.path);
       return;
     }
 
@@ -785,6 +803,28 @@ class InDocumentDiffController {
         void this.renderHunk(container, file, hunk, false);
       }
     }));
+  }
+
+  private createEditorMarkers(): EditorReviewMarker[] {
+    if (!this.file || !this.selectedMatch) return [];
+    const file = this.selectedMatch.file;
+    const commentedLines = new Set(
+      this.comments
+        .filter((comment) => comment.path === file.filename || comment.path === file.previous_filename)
+        .map((comment) => comment.line ?? comment.original_line)
+        .filter((line): line is number => typeof line === "number")
+    );
+
+    return parsePatch(file.patch)
+      .flatMap((hunk) => hunk.lines)
+      .filter((line) => line.canComment && line.newLine !== undefined)
+      .filter((line) => this.editorLineMatches(line))
+      .map((line) => ({
+        path: file.filename,
+        prNumber: this.selectedMatch!.pr.number,
+        line,
+        hasExistingComment: commentedLines.has(line.newLine!)
+      }));
   }
 
   private openSubmitModal() {
@@ -890,7 +930,10 @@ class InDocumentDiffController {
     for (const comment of comments) {
       const item = thread.createDiv({ cls: "pr-review-inline-comment" });
       const top = item.createDiv({ cls: "pr-review-inline-comment-top" });
-      top.createSpan({ cls: "pr-review-inline-author", text: comment.user.login });
+      const byline = top.createDiv({ cls: "pr-review-inline-byline" });
+      byline.createSpan({ cls: "pr-review-inline-author", text: comment.user.login });
+      const relativeTime = this.formatRelativeDate(comment.created_at);
+      if (relativeTime) byline.createSpan({ cls: "pr-review-inline-time", text: relativeTime });
       if (comment.outdated) top.createSpan({ cls: "pr-review-small", text: "outdated" });
       await this.renderCommentBody(item, comment.body, line.content);
       if (comment.html_url) new ButtonComponent(item).setButtonText("Open on GitHub").onClick(() => window.open(comment.html_url));
@@ -899,7 +942,9 @@ class InDocumentDiffController {
     for (const comment of pending) {
       const item = thread.createDiv({ cls: "pr-review-inline-comment is-pending" });
       const top = item.createDiv({ cls: "pr-review-inline-comment-top" });
-      top.createSpan({ cls: "pr-review-inline-author", text: "Pending review comment" });
+      const byline = top.createDiv({ cls: "pr-review-inline-byline" });
+      byline.createSpan({ cls: "pr-review-inline-author", text: "Pending review comment" });
+      byline.createSpan({ cls: "pr-review-inline-time", text: this.formatRelativeDate(comment.createdAt) });
       top.createSpan({ cls: "pr-review-small", text: "not submitted" });
       await this.renderCommentBody(item, comment.body, line.content);
       new ButtonComponent(item).setButtonText("Remove").onClick(async () => {
@@ -1047,6 +1092,28 @@ class InDocumentDiffController {
 
   private lineKey(path: string, line: DiffLine): string {
     return `${path}:${line.newLine ?? "?"}:${line.position}`;
+  }
+
+  private editorLineMatches(line: DiffLine) {
+    if (line.newLine === undefined) return false;
+    const cm = this.plugin.getEditorViewForFile(this.file?.path);
+    if (!cm || line.newLine < 1 || line.newLine > cm.state.doc.lines) return false;
+    return normalizeReviewLine(cm.state.doc.line(line.newLine).text) === normalizeReviewLine(line.content);
+  }
+
+  private formatRelativeDate(value?: string) {
+    if (!value) return "";
+    const then = new Date(value).getTime();
+    if (!Number.isFinite(then)) return "";
+    const seconds = Math.max(1, Math.round((Date.now() - then) / 1000));
+    if (seconds < 60) return "just now";
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return `${minutes} ${minutes === 1 ? "minute" : "minutes"} ago`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 48) return `${hours} ${hours === 1 ? "hour" : "hours"} ago`;
+    const days = Math.round(hours / 24);
+    if (days < 30) return `${days} ${days === 1 ? "day" : "days"} ago`;
+    return new Date(value).toLocaleDateString();
   }
 }
 

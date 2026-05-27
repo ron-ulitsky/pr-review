@@ -49,6 +49,8 @@ export interface ReviewComment {
   user: { login: string };
   body: string;
   path: string;
+  created_at?: string;
+  updated_at?: string;
   line?: number | null;
   original_line?: number | null;
   position?: number | null;
