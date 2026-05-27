@@ -66,25 +66,25 @@ export default class PrReviewPlugin extends Plugin {
     this.addSettingTab(new PrReviewSettingTab(this.app, this));
     this.statusBar = this.addStatusBarItem();
     this.statusBar.addClass("pr-review-statusbar-button");
-    this.statusBar.title = "Open PR Review browser";
-    this.statusBar.onclick = () => this.activateView();
-    this.addRibbonIcon("git-pull-request", "Open PR Review browser", () => this.activateView());
+    this.statusBar.title = "Show unified PR diff for the current file";
+    this.statusBar.onclick = () => this.activateFileReviewView(true);
+    this.addRibbonIcon("git-pull-request", "Show unified PR diff", () => this.activateFileReviewView(true));
     this.updateStatus("Ready");
 
     this.addCommand({
       id: "open-pr-browser",
-      name: "PR Review: Open pull request browser",
-      callback: () => this.activateView()
+      name: "PR Review: Show unified diff for current file",
+      callback: () => this.activateFileReviewView(true)
     });
     this.addCommand({
       id: "refresh-current-pr",
       name: "PR Review: Refresh current pull request",
-      callback: () => this.withView((view) => view.refresh())
+      callback: () => this.withAnyReviewView((prView) => prView.refresh(), (fileView) => fileView.refreshForActiveFile())
     });
     this.addCommand({
       id: "submit-pending-review",
       name: "PR Review: Submit pending review",
-      callback: () => this.withView((view) => view.openSubmitModal())
+      callback: () => this.withAnyReviewView((prView) => prView.openSubmitModal(), (fileView) => fileView.openSubmitModal())
     });
     this.addCommand({
       id: "checkout-selected-pr-branch",
@@ -102,11 +102,11 @@ export default class PrReviewPlugin extends Plugin {
     this.addCommand({
       id: "clear-pending-review-comments",
       name: "PR Review: Clear pending review comments",
-      callback: () => this.withView((view) => view.clearPending())
+      callback: () => this.withAnyReviewView((prView) => prView.clearPending(), (fileView) => fileView.clearPending())
     });
 
     this.app.workspace.onLayoutReady(() => {
-      for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_FILE_REVIEW)) {
+      for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_PR_REVIEW)) {
         leaf.detach();
       }
       this.clearEditorReviewMarkers();
@@ -153,7 +153,7 @@ export default class PrReviewPlugin extends Plugin {
 
   async activateFileReviewView(refresh = false) {
     const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_FILE_REVIEW);
-    const leaf = leaves[0] ?? this.app.workspace.getRightLeaf(false);
+    const leaf = leaves[0] ?? ((this.app.workspace as any).getLeaf("split") as WorkspaceLeaf);
     if (!leaf) {
       new Notice("Could not open the current-file review view.");
       return;
@@ -324,7 +324,7 @@ class CurrentFileReviewView extends ItemView {
   }
 
   getDisplayText() {
-    return "PR Review: Current file";
+    return "Unified PR Diff";
   }
 
   async onOpen() {
@@ -452,7 +452,6 @@ class CurrentFileReviewView extends ItemView {
     const toolbar = container.createDiv({ cls: "pr-review-toolbar" });
     toolbar.createDiv({ cls: "pr-review-toolbar-title", text: this.file?.path ?? "No active Markdown file" });
     new ButtonComponent(toolbar).setButtonText("Refresh file").onClick(() => this.refreshForActiveFile());
-    new ButtonComponent(toolbar).setButtonText("PR Browser").onClick(() => this.plugin.activateView());
     if (this.loading) container.createDiv({ cls: "pr-review-status", text: "Finding PRs that touch this file..." });
     if (this.error) container.createDiv({ cls: "pr-review-warning", text: this.error });
 
@@ -461,9 +460,9 @@ class CurrentFileReviewView extends ItemView {
       return;
     }
 
-    this.renderMatchSelector(container);
+    if (this.matches.length > 1) this.renderMatchSelector(container);
     if (!this.selectedMatch) {
-      container.createDiv({ cls: "pr-review-empty", text: this.matches.length ? "Select a PR to overlay review context on the file." : "No open PRs touch this file." });
+      container.createDiv({ cls: "pr-review-empty", text: this.matches.length ? "Select a PR to show its unified diff." : "No open PRs touch this file." });
       return;
     }
     this.renderSelectedFileReview(container);
