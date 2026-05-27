@@ -312,6 +312,7 @@ class CurrentFileReviewView extends ItemView {
   private draft: ReviewDraft | null = null;
   private loading = false;
   private error = "";
+  private inlineComposerKey: string | null = null;
 
   constructor(leaf: WorkspaceLeaf, private readonly plugin: PrReviewPlugin) {
     super(leaf);
@@ -374,6 +375,7 @@ class CurrentFileReviewView extends ItemView {
     this.comments = (await this.plugin.getPrService().listReviewComments(owner, repo, prNumber))
       .filter((comment) => comment.path === match.file.filename || comment.path === match.file.previous_filename);
     this.draft = await this.plugin.draftStore.setMetadata(owner, repo, prNumber, match.pr);
+    this.inlineComposerKey = null;
     this.updateEditorMarkers();
     if (rerender) this.render();
   }
@@ -508,9 +510,7 @@ class CurrentFileReviewView extends ItemView {
       });
     }
 
-    this.renderFileComments(container);
     this.renderFilePatch(container, file);
-    this.renderFilePending(container);
   }
 
   private renderFileComments(container: HTMLElement) {
@@ -547,19 +547,42 @@ class CurrentFileReviewView extends ItemView {
           new ButtonComponent(row.createDiv())
             .setButtonText("+")
             .setTooltip("Add review comment")
-            .onClick(() => this.openCommentModal(file.filename, line));
+            .onClick(() => {
+              this.inlineComposerKey = this.lineKey(file.filename, line);
+              this.render();
+            });
         }
+        this.renderInlineThreads(details, file.filename, line);
       }
     }
   }
 
-  private renderFilePending(container: HTMLElement) {
-    const pending = (this.draft?.pendingComments ?? []).filter((comment) => comment.path === this.selectedMatch?.file.filename);
-    const section = container.createDiv({ cls: "pr-review-pending" });
-    section.createDiv({ cls: "pr-review-section-summary", text: `${pending.length} pending file comment${pending.length === 1 ? "" : "s"}` });
+  private renderInlineThreads(container: HTMLElement, path: string, line: DiffLine) {
+    if (!line.canComment || line.newLine === undefined) return;
+    const comments = this.commentsForLine(line);
+    const pending = this.pendingForLine(path, line);
+    const showComposer = this.inlineComposerKey === this.lineKey(path, line);
+    if (comments.length === 0 && pending.length === 0 && !showComposer) return;
+
+    const wrap = container.createDiv({ cls: "pr-review-inline-thread-row" });
+    const gutter = wrap.createDiv({ cls: "pr-review-inline-thread-gutter" });
+    gutter.createSpan({ text: line.newLine.toString() });
+    const thread = wrap.createDiv({ cls: "pr-review-inline-thread" });
+
+    for (const comment of comments) {
+      const item = thread.createDiv({ cls: "pr-review-inline-comment" });
+      const top = item.createDiv({ cls: "pr-review-inline-comment-top" });
+      top.createSpan({ cls: "pr-review-inline-author", text: comment.user.login });
+      top.createSpan({ cls: "pr-review-small", text: comment.outdated ? "outdated" : "existing comment" });
+      item.createEl("pre", { cls: "pr-review-comment-body", text: comment.body });
+      if (comment.html_url) new ButtonComponent(item).setButtonText("Open on GitHub").onClick(() => window.open(comment.html_url));
+    }
+
     for (const comment of pending) {
-      const item = section.createDiv({ cls: "pr-review-pending-comment" });
-      item.createDiv({ cls: "pr-review-meta", text: `${comment.path}:${comment.line}` });
+      const item = thread.createDiv({ cls: "pr-review-inline-comment is-pending" });
+      const top = item.createDiv({ cls: "pr-review-inline-comment-top" });
+      top.createSpan({ cls: "pr-review-inline-author", text: "Pending review comment" });
+      top.createSpan({ cls: "pr-review-small", text: "not submitted" });
       item.createEl("pre", { cls: "pr-review-comment-body", text: comment.body });
       new ButtonComponent(item).setButtonText("Remove").onClick(async () => {
         if (!this.selectedMatch) return;
@@ -572,6 +595,30 @@ class CurrentFileReviewView extends ItemView {
         this.render();
       });
     }
+
+    if (showComposer) this.renderInlineComposer(thread, path, line);
+  }
+
+  private renderInlineComposer(container: HTMLElement, path: string, line: DiffLine) {
+    const composer = container.createDiv({ cls: "pr-review-inline-composer" });
+    composer.createDiv({ cls: "pr-review-meta", text: `New review comment on line ${line.newLine}` });
+    const normal = composer.createEl("textarea", { attr: { placeholder: "Comment before suggestion" } });
+    const suggestion = composer.createEl("textarea", { attr: { placeholder: "Replacement text for suggestion mode" } });
+    const followup = composer.createEl("textarea", { attr: { placeholder: "Comment after suggestion" } });
+    const actions = composer.createDiv({ cls: "pr-review-comment-actions" });
+    new ButtonComponent(actions).setButtonText("Add pending comment").setCta().onClick(async () => {
+      if (!normal.value.trim() && !suggestion.value.trim() && !followup.value.trim()) {
+        new Notice("Add a comment or suggestion first.");
+        return;
+      }
+      await this.addPendingComment(path, line, normal.value, suggestion.value, followup.value);
+      this.inlineComposerKey = null;
+      this.render();
+    });
+    new ButtonComponent(actions).setButtonText("Cancel").onClick(() => {
+      this.inlineComposerKey = null;
+      this.render();
+    });
   }
 
   openSubmitModal() {
@@ -607,6 +654,20 @@ class CurrentFileReviewView extends ItemView {
     if (!this.selectedMatch) return [];
     return parsePatch(this.selectedMatch.file.patch).flatMap((hunk) => hunk.lines)
       .filter((line) => line.canComment && line.newLine !== undefined);
+  }
+
+  private commentsForLine(line: DiffLine): ReviewComment[] {
+    if (line.newLine === undefined) return [];
+    return this.comments.filter((comment) => (comment.line ?? comment.original_line) === line.newLine);
+  }
+
+  private pendingForLine(path: string, line: DiffLine): PendingReviewComment[] {
+    if (line.newLine === undefined) return [];
+    return (this.draft?.pendingComments ?? []).filter((comment) => comment.path === path && comment.line === line.newLine);
+  }
+
+  private lineKey(path: string, line: DiffLine): string {
+    return `${path}:${line.newLine ?? "?"}:${line.position}`;
   }
 
   private updateEditorMarkers() {

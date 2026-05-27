@@ -265,6 +265,15 @@
   min-height: 24px;
 }
 
+.pr-review-diff-line button {
+  opacity: 0;
+}
+
+.pr-review-diff-line:hover button,
+.pr-review-diff-line:focus-within button {
+  opacity: 1;
+}
+
 .pr-review-diff-line.is-added {
   background: var(--pr-review-added);
 }
@@ -298,6 +307,67 @@
   background: var(--background-secondary);
   border-radius: 6px;
   padding: 8px;
+}
+
+.pr-review-inline-thread-row {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  background: var(--background-primary);
+  border-top: 1px solid var(--pr-review-border);
+  border-bottom: 1px solid var(--pr-review-border);
+}
+
+.pr-review-inline-thread-gutter {
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+  color: var(--text-faint);
+  background: var(--background-primary-alt);
+  padding: 10px 8px;
+  user-select: none;
+}
+
+.pr-review-inline-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  max-width: 760px;
+}
+
+.pr-review-inline-comment,
+.pr-review-inline-composer {
+  border: 1px solid var(--pr-review-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+  padding: 10px;
+}
+
+.pr-review-inline-comment.is-pending {
+  border-color: var(--interactive-accent);
+}
+
+.pr-review-inline-comment-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pr-review-inline-author {
+  font-weight: var(--font-semibold);
+}
+
+.pr-review-inline-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pr-review-inline-composer textarea {
+  width: 100%;
+  min-height: 76px;
+  resize: vertical;
 }
 
 .pr-review-add-comment {
