@@ -2,6 +2,24 @@
 
 PR Review for Obsidian is a lightweight docs-review client for GitHub pull requests. It is aimed at Markdown-heavy repositories where reviewers want to read changed `.md`, `.mdx`, and docs files inside Obsidian without turning the vault into a full IDE.
 
+## Quick Start
+
+1. Install and enable the plugin in Obsidian.
+2. Open the plugin settings and add a GitHub token with pull request access.
+3. Set the default repository owner and name.
+4. Run `PR Review: Open pull request browser` from the command palette.
+5. Select a pull request, review the Markdown diff, and add pending comments.
+6. Submit the review as a comment, approval, or change request.
+
+For a first test, use this repository itself:
+
+```text
+Owner: ron-ulitsky
+Repo: pr-review
+Base branch: main
+Docs globs: **/*.md, **/*.mdx, docs/**
+```
+
 ## Current MVP
 
 - Configure a GitHub token, API host, owner, repo, base branch, and docs file globs.
@@ -65,7 +83,7 @@ This plugin can be tested with BRAT after it is pushed to GitHub:
 
 Create a classic or fine-grained GitHub token with access to the repository pull requests. For private repositories, the token needs repository read access and pull request review write access.
 
-The MVP stores the token in Obsidian plugin settings. Treat the vault and `.obsidian` folder accordingly. The plugin masks the token in settings UI and does not intentionally log it.
+The MVP stores the token in Obsidian plugin settings. Treat the vault and `.obsidian` folder accordingly. The plugin masks the token in settings UI and does not intentionally log it. A future release should move token handling to a more secure storage mechanism if Obsidian exposes one.
 
 ## Obsidian Git
 
@@ -105,6 +123,7 @@ If neither Obsidian Git nor local Git is available, GitHub PR browsing, comments
 - Mobile support is limited. Local Git fallback is desktop-only.
 - Large PRs currently fetch the first 100 files and first 100 review comments.
 - Diff rendering is intentionally simple and optimized for docs review.
+- The plugin currently ships as a manual build artifact, not as a published community plugin.
 
 ## Development
 
