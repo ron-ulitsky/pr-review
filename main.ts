@@ -712,7 +712,7 @@ class InDocumentDiffController {
 
     if (this.surfaceMode === "editor") {
       this.plugin.updateEditorReviewPanels(this.createEditorPanels(), this.file.path);
-      this.plugin.updateEditorReviewMarkers(this.createEditorMarkers(), this.file.path);
+      this.plugin.updateEditorReviewMarkers([], this.file.path);
       return;
     }
 
@@ -803,28 +803,6 @@ class InDocumentDiffController {
         void this.renderHunk(container, file, hunk, false);
       }
     }));
-  }
-
-  private createEditorMarkers(): EditorReviewMarker[] {
-    if (!this.file || !this.selectedMatch) return [];
-    const file = this.selectedMatch.file;
-    const commentedLines = new Set(
-      this.comments
-        .filter((comment) => comment.path === file.filename || comment.path === file.previous_filename)
-        .map((comment) => comment.line ?? comment.original_line)
-        .filter((line): line is number => typeof line === "number")
-    );
-
-    return parsePatch(file.patch)
-      .flatMap((hunk) => hunk.lines)
-      .filter((line) => line.canComment && line.newLine !== undefined)
-      .filter((line) => this.editorLineMatches(line))
-      .map((line) => ({
-        path: file.filename,
-        prNumber: this.selectedMatch!.pr.number,
-        line,
-        hasExistingComment: commentedLines.has(line.newLine!)
-      }));
   }
 
   private openSubmitModal() {
@@ -1092,13 +1070,6 @@ class InDocumentDiffController {
 
   private lineKey(path: string, line: DiffLine): string {
     return `${path}:${line.newLine ?? "?"}:${line.position}`;
-  }
-
-  private editorLineMatches(line: DiffLine) {
-    if (line.newLine === undefined) return false;
-    const cm = this.plugin.getEditorViewForFile(this.file?.path);
-    if (!cm || line.newLine < 1 || line.newLine > cm.state.doc.lines) return false;
-    return normalizeReviewLine(cm.state.doc.line(line.newLine).text) === normalizeReviewLine(line.content);
   }
 
   private formatRelativeDate(value?: string) {
