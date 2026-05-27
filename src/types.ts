@@ -8,6 +8,7 @@ export interface PrReviewSettings {
   defaultBaseBranch: string;
   preferObsidianGit: boolean;
   useLocalGitFallback: boolean;
+  debugLogging: boolean;
   docsFileGlobs: string;
 }
 

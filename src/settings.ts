@@ -8,6 +8,7 @@ export const DEFAULT_SETTINGS: PrReviewSettings = {
   defaultBaseBranch: "main",
   preferObsidianGit: true,
   useLocalGitFallback: true,
+  debugLogging: false,
   docsFileGlobs: "**/*.md, **/*.mdx, docs/**"
 };
 

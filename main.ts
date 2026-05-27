@@ -20,6 +20,7 @@ import { ReviewDraftStore } from "./src/drafts";
 import { chooseGitAdapter } from "./src/git";
 import { GitHubClient, PullRequestService, showGitHubError } from "./src/github";
 import { DEFAULT_SETTINGS, maskToken, normalizeSettings } from "./src/settings";
+import { DebugLogger } from "./src/debug";
 import type {
   FilePullRequestMatch,
   GitAdapter,
@@ -43,7 +44,14 @@ interface EditorReviewMarker {
   hasExistingComment: boolean;
 }
 
+interface EditorReviewPanel {
+  key: string;
+  line: number;
+  render(container: HTMLElement): void;
+}
+
 const setReviewMarkers = StateEffect.define<EditorReviewMarker[]>();
+const setReviewPanels = StateEffect.define<EditorReviewPanel[]>();
 
 function normalizeReviewLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
@@ -53,6 +61,7 @@ export default class PrReviewPlugin extends Plugin {
   settings: PrReviewSettings = DEFAULT_SETTINGS;
   statusBar!: HTMLElement;
   draftStore!: ReviewDraftStore;
+  debug!: DebugLogger;
   gitAdapter: GitAdapter | null = null;
   private lastActiveMarkdownFile: TFile | null = null;
   private inDocumentDiff!: InDocumentDiffController;
@@ -61,22 +70,37 @@ export default class PrReviewPlugin extends Plugin {
     const data = await this.loadData();
     this.settings = normalizeSettings(data?.settings ?? data);
     this.draftStore = new ReviewDraftStore(this);
+    this.debug = new DebugLogger(this);
+    await this.debug.load();
+    this.debug.log("plugin.onload", {
+      owner: this.settings.defaultOwner,
+      repo: this.settings.defaultRepo,
+      host: this.settings.githubHost,
+      debugLogging: this.settings.debugLogging
+    });
     this.gitAdapter = await chooseGitAdapter(this.app, this.settings.preferObsidianGit, this.settings.useLocalGitFallback);
     this.inDocumentDiff = new InDocumentDiffController(this);
+
+    this.registerEditorExtension(createReviewEditorExtension(this));
 
     this.registerView(VIEW_TYPE_PR_REVIEW, (leaf) => new PrReviewView(leaf, this));
     this.registerView(VIEW_TYPE_FILE_REVIEW, (leaf) => new CurrentFileReviewView(leaf, this));
     this.addSettingTab(new PrReviewSettingTab(this.app, this));
     this.statusBar = this.addStatusBarItem();
     this.statusBar.addClass("pr-review-statusbar-button");
-    this.statusBar.title = "Toggle unified PR diff in the current file";
+    this.statusBar.title = "Toggle in-document PR review mode in the current file";
     this.statusBar.onclick = () => this.inDocumentDiff.toggle();
-    this.addRibbonIcon("git-pull-request", "Toggle unified PR diff", () => this.inDocumentDiff.toggle());
+    this.addRibbonIcon("git-pull-request", "Toggle in-document PR review mode", () => this.inDocumentDiff.toggle());
     this.updateStatus("Ready");
 
     this.addCommand({
       id: "open-pr-browser",
-      name: "PR Review: Toggle unified diff in current file",
+      name: "PR Review: Open pull request browser",
+      callback: () => this.activateView()
+    });
+    this.addCommand({
+      id: "toggle-in-document-review",
+      name: "PR Review: Toggle in-document review mode",
       callback: () => this.inDocumentDiff.toggle()
     });
     this.addCommand({
@@ -107,6 +131,11 @@ export default class PrReviewPlugin extends Plugin {
       name: "PR Review: Clear pending review comments",
       callback: () => this.withAnyReviewView((prView) => prView.clearPending(), (fileView) => fileView.clearPending())
     });
+    this.addCommand({
+      id: "show-debug-log",
+      name: "PR Review: Show debug log",
+      callback: () => this.debug.show()
+    });
 
     this.app.workspace.onLayoutReady(() => {
       for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_PR_REVIEW)) {
@@ -121,10 +150,12 @@ export default class PrReviewPlugin extends Plugin {
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
       this.updateStatusForActiveFile();
       this.refreshFileReviewIfMarkdownLeaf();
+      this.inDocumentDiff.onActiveLeafChange();
     }));
     this.registerEvent(this.app.workspace.on("file-open", () => {
       this.updateStatusForActiveFile();
       this.refreshFileReviewIfMarkdownLeaf();
+      this.inDocumentDiff.onActiveLeafChange();
     }));
   }
 
@@ -133,6 +164,14 @@ export default class PrReviewPlugin extends Plugin {
     const data = (await this.loadData()) ?? {};
     await this.saveData({ ...data, settings: this.settings });
     this.gitAdapter = await chooseGitAdapter(this.app, this.settings.preferObsidianGit, this.settings.useLocalGitFallback);
+    this.debug.log("settings.save", {
+      owner: this.settings.defaultOwner,
+      repo: this.settings.defaultRepo,
+      host: this.settings.githubHost,
+      preferObsidianGit: this.settings.preferObsidianGit,
+      useLocalGitFallback: this.settings.useLocalGitFallback,
+      debugLogging: this.settings.debugLogging
+    });
     this.updateStatus("Settings saved");
   }
 
@@ -245,8 +284,14 @@ export default class PrReviewPlugin extends Plugin {
     cm?.dispatch({ effects: setReviewMarkers.of(markers) });
   }
 
+  updateEditorReviewPanels(panels: EditorReviewPanel[], filePath?: string) {
+    const cm = this.getEditorViewForFile(filePath);
+    cm?.dispatch({ effects: setReviewPanels.of(panels) });
+  }
+
   clearEditorReviewMarkers() {
     this.updateEditorReviewMarkers([]);
+    this.updateEditorReviewPanels([]);
   }
 
   getEditorViewForFile(filePath?: string): EditorView | undefined {
@@ -304,6 +349,27 @@ export default class PrReviewPlugin extends Plugin {
 }
 
 function createReviewEditorExtension(plugin: PrReviewPlugin) {
+  class ReviewPanelWidget extends WidgetType {
+    constructor(private readonly panel: EditorReviewPanel) {
+      super();
+    }
+
+    eq(other: ReviewPanelWidget) {
+      return other.panel.key === this.panel.key;
+    }
+
+    toDOM() {
+      const wrap = document.createElement("div");
+      wrap.className = "pr-review-editor-panel";
+      this.panel.render(wrap);
+      return wrap;
+    }
+
+    ignoreEvent() {
+      return false;
+    }
+  }
+
   class ReviewActionWidget extends WidgetType {
     constructor(private readonly marker: EditorReviewMarker) {
       super();
@@ -333,32 +399,65 @@ function createReviewEditorExtension(plugin: PrReviewPlugin) {
     }
   }
 
-  return StateField.define<DecorationSet>({
+  interface ReviewEditorState {
+    markers: EditorReviewMarker[];
+    panels: EditorReviewPanel[];
+    decorations: DecorationSet;
+  }
+
+  const buildDecorations = (state: EditorView["state"], markers: EditorReviewMarker[], panels: EditorReviewPanel[]) => {
+    const decorations = markers.flatMap((marker) => {
+      if (marker.line.newLine === undefined) return [];
+      if (marker.line.newLine < 1 || marker.line.newLine > state.doc.lines) return [];
+      const line = state.doc.line(marker.line.newLine);
+      if (normalizeReviewLine(line.text) !== normalizeReviewLine(marker.line.content)) return [];
+      const cls = marker.line.type === "added" ? "pr-review-editor-line-added" : "pr-review-editor-line-context";
+      return [
+        Decoration.line({ class: cls }).range(line.from),
+        Decoration.widget({
+          widget: new ReviewActionWidget(marker),
+          side: 1
+        }).range(line.to)
+      ];
+    });
+
+    for (const panel of panels) {
+      const lineNumber = Math.max(1, Math.min(panel.line, state.doc.lines));
+      const line = state.doc.line(lineNumber);
+      decorations.push(Decoration.widget({
+        widget: new ReviewPanelWidget(panel),
+        block: true,
+        side: -1
+      }).range(line.from));
+    }
+
+    return Decoration.set(decorations, true);
+  };
+
+  return StateField.define<ReviewEditorState>({
     create() {
-      return Decoration.none;
+      return { markers: [], panels: [], decorations: Decoration.none };
     },
     update(value, transaction) {
+      let markers = value.markers;
+      let panels = value.panels;
+      let changed = false;
       for (const effect of transaction.effects) {
-        if (!effect.is(setReviewMarkers)) continue;
-        const decorations = effect.value.flatMap((marker) => {
-          if (marker.line.newLine === undefined) return [];
-          if (marker.line.newLine < 1 || marker.line.newLine > transaction.state.doc.lines) return [];
-          const line = transaction.state.doc.line(marker.line.newLine);
-          if (normalizeReviewLine(line.text) !== normalizeReviewLine(marker.line.content)) return [];
-          const cls = marker.line.type === "added" ? "pr-review-editor-line-added" : "pr-review-editor-line-context";
-          return [
-            Decoration.line({ class: cls }).range(line.from),
-            Decoration.widget({
-              widget: new ReviewActionWidget(marker),
-              side: 1
-            }).range(line.to)
-          ];
-        });
-        return Decoration.set(decorations, true);
+        if (effect.is(setReviewMarkers)) {
+          markers = effect.value;
+          changed = true;
+        }
+        if (effect.is(setReviewPanels)) {
+          panels = effect.value;
+          changed = true;
+        }
       }
-      return value.map(transaction.changes);
+      if (changed) {
+        return { markers, panels, decorations: buildDecorations(transaction.state, markers, panels) };
+      }
+      return { markers, panels, decorations: value.decorations.map(transaction.changes) };
     },
-    provide: (field) => EditorView.decorations.from(field)
+    provide: (field) => EditorView.decorations.from(field, (value) => value.decorations)
   });
 }
 
@@ -370,31 +469,114 @@ class InDocumentDiffController {
   private selectedMatch: FilePullRequestMatch | null = null;
   private comments: ReviewComment[] = [];
   private draft: ReviewDraft | null = null;
+  private isEnabled = false;
+  private isLoading = false;
   private inlineComposerKey: string | null = null;
+  private surfaceMode: "dom" | "editor" = "dom";
 
   constructor(private readonly plugin: PrReviewPlugin) {}
 
   async toggle() {
     const file = this.plugin.getMarkdownFileForReview();
     const view = this.plugin.getMarkdownViewForReview(file?.path);
+    this.plugin.debug.log("inDocument.toggle", {
+      file: file?.path ?? null,
+      hasView: Boolean(view),
+      activePath: this.activePath,
+      isEnabled: this.isEnabled,
+      viewMode: view?.getMode?.() ?? null
+    });
     if (!view || !file) {
       new Notice("Open a Markdown or MDX file first.");
+      this.plugin.debug.log("inDocument.toggle.noFileOrView");
       return;
     }
 
-    if (this.activePath === file.path && this.getHost(view)) {
-      this.removeHosts();
-      this.activePath = null;
-      this.host = null;
-      new Notice(`Hidden PR diff for ${file.path}`);
+    if (this.isEnabled && this.activePath === file.path) {
+      this.disable();
+      new Notice(`Disabled in-document PR review for ${file.path}`);
+      this.plugin.debug.log("inDocument.disableFromToggle", { file: file.path });
       return;
     }
 
-    this.removeHosts();
+    this.disable();
+    this.isEnabled = true;
     this.activePath = file.path;
     this.file = file;
-    this.host = this.createHost(view, file);
+    if (view.getMode() !== "source") {
+      new Notice("Switch to editing mode before showing PR review diffs.");
+      this.plugin.debug.log("inDocument.previewUnsupported", { file: file.path, viewMode: view.getMode() });
+      this.disable();
+      return;
+    }
+    this.surfaceMode = "editor";
+    this.host = null;
+    new Notice(`Enabled PR diff for ${file.path}`);
+    this.plugin.debug.log("inDocument.enabled", {
+      file: file.path,
+      surfaceMode: this.surfaceMode
+    });
     void this.load();
+  }
+
+  disable() {
+    this.plugin.debug.log("inDocument.disable", {
+      activePath: this.activePath,
+      hadHost: Boolean(this.host),
+      hostConnected: this.host?.isConnected ?? false
+    });
+    this.isEnabled = false;
+    this.activePath = null;
+    this.file = null;
+    this.selectedMatch = null;
+    this.comments = [];
+    this.draft = null;
+    this.isLoading = false;
+    this.surfaceMode = "dom";
+
+    this.removeHosts();
+
+    this.plugin.clearEditorReviewMarkers();
+  }
+
+  onActiveLeafChange() {
+    if (!this.isEnabled) return;
+    const currentFile = this.plugin.getMarkdownFileForReview();
+    this.plugin.debug.log("inDocument.activeLeafChange", {
+      currentFile: currentFile?.path ?? null,
+      activePath: this.activePath,
+      isLoading: this.isLoading,
+      hostConnected: this.host?.isConnected ?? false
+    });
+    if (!currentFile) {
+      this.disable();
+      return;
+    }
+
+    if (currentFile.path !== this.activePath) {
+      this.activePath = currentFile.path;
+      this.file = currentFile;
+
+      const view = this.plugin.getMarkdownViewForReview(currentFile.path);
+      if (view) {
+        this.removeHosts();
+        if (view.getMode() !== "source") {
+          this.disable();
+          return;
+        }
+        this.surfaceMode = "editor";
+        this.host = null;
+        void this.load();
+      } else {
+        this.disable();
+      }
+    } else if (!this.host?.isConnected && !this.isLoading) {
+      const view = this.plugin.getMarkdownViewForReview(currentFile.path);
+      if (view) {
+        this.host = this.createHost(view, currentFile);
+        void this.render();
+      }
+    }
   }
 
   private removeHosts() {
@@ -410,22 +592,29 @@ class InDocumentDiffController {
     const host = createDiv({ cls: "pr-review-in-document" });
     host.dataset.prReviewPath = file.path;
     target.prepend(host);
+    this.plugin.debug.log("inDocument.createHost", {
+      file: file.path,
+      targetClass: target.className,
+      targetTag: target.tagName,
+      childCount: target.childElementCount,
+      hostConnected: host.isConnected
+    });
     return host;
   }
 
   private getMountTarget(view: MarkdownView): HTMLElement {
     const container = view.containerEl;
-    return (
-      container.querySelector(".markdown-preview-sizer")
-      ?? container.querySelector(".markdown-preview-view")
-      ?? container.querySelector(".markdown-rendered")
-      ?? container.querySelector(".view-content")
-      ?? container
-    ) as HTMLElement;
+    return (container.querySelector(".view-content") ?? container) as HTMLElement;
   }
 
   private async load() {
-    if (!this.host || !this.file) return;
+    if (!this.file) return;
+    this.isLoading = true;
+    this.plugin.debug.log("inDocument.load.start", {
+      file: this.file.path,
+      surfaceMode: this.surfaceMode,
+      hostConnected: this.host?.isConnected ?? false
+    });
     this.renderShell("Finding PRs that touch this file...");
     try {
       this.ensureReady();
@@ -435,13 +624,30 @@ class InDocumentDiffController {
         this.plugin.settings.defaultBaseBranch,
         this.file.path
       );
+      this.plugin.debug.log("inDocument.load.matches", {
+        file: this.file.path,
+        matches: this.matches.length,
+        selectedPr: this.matches[0]?.pr.number ?? null
+      });
       this.selectedMatch = this.matches[0] ?? null;
       if (this.selectedMatch) await this.loadSelected();
       await this.render();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.renderShell(message, true);
+      this.plugin.debug.error("inDocument.load.error", error, {
+        file: this.file?.path ?? null,
+        surfaceMode: this.surfaceMode,
+        hostConnected: this.host?.isConnected ?? false
+      });
       showGitHubError(error);
+    } finally {
+      this.isLoading = false;
+      this.plugin.debug.log("inDocument.load.finish", {
+        file: this.file?.path ?? null,
+        surfaceMode: this.surfaceMode,
+        hostConnected: this.host?.isConnected ?? false
+      });
     }
   }
 
@@ -451,72 +657,213 @@ class InDocumentDiffController {
     this.comments = (await this.plugin.getPrService().listReviewComments(owner, repo, this.selectedMatch.pr.number))
       .filter((comment) => comment.path === this.selectedMatch?.file.filename || comment.path === this.selectedMatch?.file.previous_filename);
     this.draft = await this.plugin.draftStore.setMetadata(owner, repo, this.selectedMatch.pr.number, this.selectedMatch.pr);
+    this.plugin.debug.log("inDocument.loadSelected", {
+      pr: this.selectedMatch.pr.number,
+      file: this.selectedMatch.file.filename,
+      hasPatch: Boolean(this.selectedMatch.file.patch),
+      comments: this.comments.length,
+      pending: this.draft.pendingComments.length
+    });
   }
 
   private renderShell(message: string, warning = false) {
+    if (this.surfaceMode === "editor") {
+      const filePath = this.file?.path;
+      this.plugin.updateEditorReviewPanels([{
+        key: `status:${message}:${warning}`,
+        line: 1,
+        render: (container) => {
+          container.createDiv({ cls: warning ? "pr-review-warning" : "pr-review-status", text: message });
+        }
+      }], filePath);
+      return;
+    }
     if (!this.host) return;
     this.host.empty();
     this.host.createDiv({ cls: warning ? "pr-review-warning" : "pr-review-status", text: message });
   }
 
   private async render() {
-    if (!this.host || !this.file) return;
-    this.host.empty();
+    if (!this.file) return;
+    this.plugin.debug.log("inDocument.render", {
+      file: this.file.path,
+      matches: this.matches.length,
+      selectedPr: this.selectedMatch?.pr.number ?? null,
+      surfaceMode: this.surfaceMode,
+      hostConnected: this.host?.isConnected ?? false
+    });
 
-    if (this.matches.length === 0) {
-      this.host.createDiv({ cls: "pr-review-empty", text: "No open PRs touch this file." });
+    if (this.surfaceMode === "editor") {
+      this.plugin.updateEditorReviewPanels(this.createEditorPanels(), this.file.path);
       return;
     }
 
-    if (this.matches.length > 1) this.renderSelector(this.host);
-    if (!this.selectedMatch) return;
-
-    await this.renderPatch(this.host, this.selectedMatch.file);
+    if (!this.host) return;
+    this.host.empty();
+    await this.renderInto(this.host);
   }
 
-  private renderSelector(container: HTMLElement) {
-    const wrap = container.createDiv({ cls: "pr-review-file-pr-select" });
-    wrap.createDiv({ cls: "pr-review-title", text: "Pull requests touching this file" });
-    const select = wrap.createEl("select");
-    for (const match of this.matches) {
-      select.createEl("option", { text: `#${match.pr.number} ${match.pr.title}`, value: String(match.pr.number) });
+  private async renderInto(container: HTMLElement) {
+    if (!this.file) return;
+
+    if (this.matches.length === 0) {
+      container.createDiv({ cls: "pr-review-empty", text: "No open PRs touch this file." });
+      return;
     }
-    select.value = this.selectedMatch ? String(this.selectedMatch.pr.number) : "";
-    select.onchange = async () => {
-      this.selectedMatch = this.matches.find((match) => match.pr.number === Number(select.value)) ?? null;
-      this.inlineComposerKey = null;
-      await this.loadSelected();
-      await this.render();
-    };
+
+    const bar = container.createDiv({ cls: "pr-review-in-document-top" });
+
+    if (this.matches.length > 1) {
+      const select = bar.createEl("select");
+      for (const match of this.matches) {
+        select.createEl("option", { text: `#${match.pr.number} ${match.pr.title}`, value: String(match.pr.number) });
+      }
+      select.value = this.selectedMatch ? String(this.selectedMatch.pr.number) : "";
+      select.onchange = async () => {
+        this.selectedMatch = this.matches.find((match) => match.pr.number === Number(select.value)) ?? null;
+        await this.loadSelected();
+        await this.render();
+      };
+    } else if (this.selectedMatch) {
+      bar.createSpan({ cls: "pr-review-title", text: `#${this.selectedMatch.pr.number} ${this.selectedMatch.pr.title}` });
+    }
+
+    if (this.selectedMatch && this.draft) {
+      const details = bar.createDiv({ cls: "pr-review-file-actions" });
+      details.createSpan({ cls: "pr-review-small", text: `${this.draft.pendingComments.length} pending comments` });
+
+      new ButtonComponent(details)
+        .setButtonText("Submit Review")
+        .setCta()
+        .onClick(() => this.openSubmitModal());
+
+      new ButtonComponent(details)
+        .setButtonText("Refresh")
+        .onClick(async () => {
+          await this.loadSelected();
+          await this.render();
+        });
+    }
+
+    if (!this.selectedMatch) return;
+    await this.renderPatch(container, this.selectedMatch.file);
+  }
+
+  private createEditorPanels(): EditorReviewPanel[] {
+    if (!this.file || !this.selectedMatch) return [];
+    const file = this.selectedMatch.file;
+    const hunks = parsePatch(file.patch);
+    const keyBase = `${this.file.path}:${this.selectedMatch.pr.number}:${this.draft?.pendingComments.length ?? 0}:${this.inlineComposerKey ?? ""}`;
+    const panels = hunks
+      .map((hunk, index) => {
+        const changedLines = hunk.lines.filter((line) => line.type !== "context");
+        if (changedLines.length === 0) return null;
+        const anchor = changedLines.find((line) => line.newLine !== undefined)
+          ?? hunk.lines.find((line) => line.newLine !== undefined)
+          ?? null;
+        if (!anchor?.newLine) return null;
+        return {
+          hunk,
+          index,
+          line: anchor.newLine
+        };
+      })
+      .filter((panel): panel is { hunk: ReturnType<typeof parsePatch>[number]; index: number; line: number } => Boolean(panel));
+
+    this.plugin.debug.log("inDocument.createEditorPanels", {
+      file: file.filename,
+      hunks: hunks.length,
+      panels: panels.length,
+      lines: panels.map((panel) => panel.line)
+    });
+
+    return panels.map(({ hunk, index, line }) => ({
+      key: `${keyBase}:${index}:${hunk.header}`,
+      line,
+      render: (container) => {
+        container.addClass("pr-review-editor-hunk-panel");
+        void this.renderHunk(container, file, hunk, false);
+      }
+    }));
+  }
+
+  private openSubmitModal() {
+    if (!this.selectedMatch || !this.draft) return;
+    new InDocumentSubmitModal(this.plugin.app, this, this.selectedMatch.pr, this.draft).open();
+  }
+
+  async submitReview(event: ReviewEvent, body: string) {
+    if (!this.selectedMatch || !this.draft) return;
+    await this.plugin.draftStore.setReviewBody(
+      this.plugin.settings.defaultOwner,
+      this.plugin.settings.defaultRepo,
+      this.selectedMatch.pr.number,
+      body
+    );
+    await this.plugin.getPrService().submitReview(
+      this.plugin.settings.defaultOwner,
+      this.plugin.settings.defaultRepo,
+      this.selectedMatch.pr.number,
+      event,
+      body,
+      this.draft.pendingComments
+    );
+    this.draft = await this.plugin.draftStore.clearPending(
+      this.plugin.settings.defaultOwner,
+      this.plugin.settings.defaultRepo,
+      this.selectedMatch.pr.number
+    );
+    new Notice("Review submitted.");
+    await this.loadSelected();
+    await this.render();
+  }
+
+  private ensureReady() {
+    if (!this.plugin.settings.githubToken) throw new Error("GitHub token is required.");
+    if (!this.plugin.settings.defaultOwner || !this.plugin.settings.defaultRepo) throw new Error("Default owner and repo are required.");
+    if (!this.file) throw new Error("Open a Markdown or MDX file first.");
   }
 
   private async renderPatch(container: HTMLElement, file: PullRequestFile) {
-    const section = container.createDiv({ cls: "pr-review-files" });
     if (!file.patch) {
-      section.createDiv({ cls: "pr-review-warning", text: "GitHub did not include a patch for this file." });
+      container.createDiv({ cls: "pr-review-warning", text: "GitHub did not include a patch for this file." });
+      this.plugin.debug.log("inDocument.renderPatch.noPatch", { file: file.filename });
       return;
     }
 
-    const diff = section.createDiv({ cls: "pr-review-diff pr-review-rendered-diff" });
-    for (const hunk of parsePatch(file.patch)) {
-      const hunkEl = diff.createDiv({ cls: "pr-review-hunk pr-review-flat-hunk" });
-      let group: DiffLine[] = [];
-      const flushGroup = async () => {
-        if (group.length === 0) return;
-        await this.renderMarkdownGroup(hunkEl, group);
-        group = [];
-      };
+    const diff = container.createDiv({ cls: "pr-review-diff pr-review-rendered-diff" });
+    const hunks = parsePatch(file.patch);
+    this.plugin.debug.log("inDocument.renderPatch", {
+      file: file.filename,
+      patchLength: file.patch.length,
+      hunks: hunks.length,
+      lines: hunks.flatMap((hunk) => hunk.lines).length
+    });
+    for (const hunk of hunks) await this.renderHunk(diff, file, hunk, true);
+  }
 
-      for (const line of hunk.lines) {
-        if (group.length > 0 && group[0].type !== line.type) await flushGroup();
-        group.push(line);
-        if (this.hasInlineThread(file.filename, line)) {
-          await flushGroup();
-          this.renderInlineThreads(hunkEl, file.filename, line);
-        }
+  private async renderHunk(container: HTMLElement, file: PullRequestFile, hunk: ReturnType<typeof parsePatch>[number], includeContext: boolean) {
+    const hunkEl = container.createDiv({ cls: "pr-review-hunk pr-review-flat-hunk" });
+    let group: DiffLine[] = [];
+    const flushGroup = async () => {
+      if (group.length === 0) return;
+      await this.renderMarkdownGroup(hunkEl, group);
+      group = [];
+    };
+
+    for (const line of hunk.lines) {
+      if (!includeContext && line.type === "context" && !this.hasInlineThread(file.filename, line)) {
+        await flushGroup();
+        continue;
       }
-      await flushGroup();
+      if (group.length > 0 && group[0].type !== line.type) await flushGroup();
+      group.push(line);
+      if (this.hasInlineThread(file.filename, line)) {
+        await flushGroup();
+        this.renderInlineThreads(hunkEl, file.filename, line);
+      }
     }
+    await flushGroup();
   }
 
   private async renderMarkdownGroup(container: HTMLElement, lines: DiffLine[]) {
@@ -529,6 +876,26 @@ class InDocumentDiffController {
     } else {
       markdown.createDiv({ cls: "pr-review-blank-line" });
     }
+
+    const path = this.selectedMatch?.file.filename ?? "";
+    const blockHasThread = lines.some((line) => this.hasInlineThread(path, line));
+    const commentable = blockHasThread ? [] : lines.filter((line) =>
+      line.canComment
+      && line.newLine !== undefined
+      && line.type !== "removed"
+    );
+    if (commentable.length > 0) {
+      const actions = block.createDiv({ cls: "pr-review-inline-actions" });
+      const line = commentable[commentable.length - 1];
+      new ButtonComponent(actions)
+        .setButtonText("Add comment")
+        .setTooltip(`Add review comment on line ${line.newLine}`)
+        .onClick(() => {
+          if (!this.selectedMatch) return;
+          this.inlineComposerKey = this.lineKey(this.selectedMatch.file.filename, line);
+          void this.render();
+        });
+    }
   }
 
   private renderInlineThreads(container: HTMLElement, path: string, line: DiffLine) {
@@ -538,10 +905,7 @@ class InDocumentDiffController {
     const showComposer = this.inlineComposerKey === this.lineKey(path, line);
     if (comments.length === 0 && pending.length === 0 && !showComposer) return;
 
-    const wrap = container.createDiv({ cls: "pr-review-inline-thread-row" });
-    wrap.createDiv({ cls: "pr-review-inline-thread-gutter" });
-    const thread = wrap.createDiv({ cls: "pr-review-inline-thread" });
-
+    const thread = container.createDiv({ cls: "pr-review-inline-thread" });
     for (const comment of comments) {
       const item = thread.createDiv({ cls: "pr-review-inline-comment" });
       const top = item.createDiv({ cls: "pr-review-inline-comment-top" });
@@ -624,45 +988,8 @@ class InDocumentDiffController {
     );
   }
 
-  private openSubmitModal() {
-    if (!this.selectedMatch || !this.draft) return;
-    new InDocumentSubmitModal(this.plugin.app, this, this.selectedMatch.pr, this.draft).open();
-  }
-
-  async submitReview(event: ReviewEvent, body: string) {
-    if (!this.selectedMatch || !this.draft) return;
-    await this.plugin.draftStore.setReviewBody(
-      this.plugin.settings.defaultOwner,
-      this.plugin.settings.defaultRepo,
-      this.selectedMatch.pr.number,
-      body
-    );
-    await this.plugin.getPrService().submitReview(
-      this.plugin.settings.defaultOwner,
-      this.plugin.settings.defaultRepo,
-      this.selectedMatch.pr.number,
-      event,
-      body,
-      this.draft.pendingComments
-    );
-    this.draft = await this.plugin.draftStore.clearPending(
-      this.plugin.settings.defaultOwner,
-      this.plugin.settings.defaultRepo,
-      this.selectedMatch.pr.number
-    );
-    new Notice("Review submitted.");
-    await this.loadSelected();
-    await this.render();
-  }
-
   private lineKey(path: string, line: DiffLine): string {
     return `${path}:${line.newLine ?? "?"}:${line.position}`;
-  }
-
-  private ensureReady() {
-    if (!this.plugin.settings.githubToken) throw new Error("GitHub token is required.");
-    if (!this.plugin.settings.defaultOwner || !this.plugin.settings.defaultRepo) throw new Error("Default owner and repo are required.");
-    if (!this.file) throw new Error("Open a Markdown or MDX file first.");
   }
 }
 
@@ -1737,6 +2064,24 @@ class PrReviewSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
           this.display();
         }));
+
+    new Setting(containerEl)
+      .setName("Debug logging")
+      .setDesc("Writes recent PR Review events to plugin data. Tokens are masked; use PR Review: Show debug log to inspect or copy it.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.debugLogging)
+        .onChange(async (value) => {
+          this.plugin.settings.debugLogging = value;
+          await this.plugin.saveSettings();
+          this.display();
+        }));
+
+    new Setting(containerEl)
+      .setName("Debug log")
+      .setDesc("Show recent mount, API, and render events for local debugging.")
+      .addButton((button) => button
+        .setButtonText("Show log")
+        .onClick(() => this.plugin.debug.show()));
   }
 
   private textSetting(containerEl: HTMLElement, name: string, desc: string, key: TextSettingKey) {
