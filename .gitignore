@@ -1,0 +1,11 @@
+.obsidian/
+node_modules/
+dist/
+artifact/
+main.js
+*.map
+*.log
+.env
+.env.*
+.DS_Store
+Thumbs.db

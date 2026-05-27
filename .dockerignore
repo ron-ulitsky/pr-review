@@ -1,0 +1,8 @@
+.git
+.obsidian
+node_modules
+dist
+artifact
+*.log
+main.js
+*.map

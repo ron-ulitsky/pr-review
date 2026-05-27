@@ -1,0 +1,10 @@
+{
+  "id": "pr-review-for-obsidian",
+  "name": "PR Review for Obsidian",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "A lightweight docs-review client for GitHub pull requests in Markdown-heavy repositories.",
+  "author": "Ron Ulitsky",
+  "authorUrl": "https://github.com/ron-ulitsky",
+  "isDesktopOnly": true
+}

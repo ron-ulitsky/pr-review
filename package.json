@@ -1,0 +1,30 @@
+{
+  "name": "pr-review-for-obsidian",
+  "version": "0.1.0",
+  "description": "Review Markdown-heavy GitHub pull requests from inside Obsidian.",
+  "main": "main.js",
+  "scripts": {
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs",
+    "package": "node scripts/package-plugin.mjs",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "obsidian",
+    "github",
+    "pull-request",
+    "markdown",
+    "review"
+  ],
+  "author": "Ron Ulitsky <ron.ulitsky@gmail.com>",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.23.0",
+    "obsidian": "^1.5.12",
+    "tslib": "^2.6.3",
+    "typescript": "^5.5.3",
+    "vitest": "^2.0.5"
+  }
+}
