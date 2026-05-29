@@ -800,6 +800,7 @@ class InDocumentDiffController {
       line,
       render: (container) => {
         container.addClass("pr-review-editor-hunk-panel");
+        container.addClass("pr-review-rendered-diff");
         void this.renderHunk(container, file, hunk, false);
       }
     }));
